@@ -10,19 +10,28 @@ from lenstronomy.Sampling.Samplers.pso import ParticleSwarmOptimizer, Particle
 
 class Optimizer():
 
-    def __init__(self, multi_spec):
+    def __init__(self, multi_spec, kwargs_likelihood={}):
         '''Docstring TBD. Uses COBYQA method for constrained optimization (needs scipy>=1.14.0).
         multi_spec: instance of MultiSpectrum() class'''
         self.multi_spec = multi_spec
         
         self.multi_spec.set_initial_values()
-        self.init_array, self.sigs_array = self.multi_spec.get_init_sample_distrib() # initial values of free parameters + spread of initial samples
-        self.bounds_array = self.multi_spec.get_bounds_freeparams() #prior bounds on free parameters
+        self.init_array, self.sigs_array = self.multi_spec.get_init_sample_distrib_free_nonlinear_params() 
+                                # initial values of free (non-linear) parameters + spread of initial samples
+        self.bounds_array = self.multi_spec.get_bounds_free_nonlinear_params() #prior bounds on free (non-linear) parameters 
+        self.kwargs_lik = kwargs_likelihood
+        
 
-
-    def find_MLE(self):
+    def find_MLE(self, plot=True):
         '''Should update the ParamHandler kwargs values automatically'''
-        res = minimize(lambda a : -self.multi_spec.log_likelihood_from_array(a), x0 = self.init_array, bounds = self.bounds_array, method='COBYQA')
+        res = minimize(lambda a : -self.multi_spec.log_likelihood_from_array(a, **self.kwargs_lik)[0], 
+                       x0 = self.init_array, bounds = self.bounds_array, method='COBYQA')
+        
+        logL, kwargs_values = self.multi_spec.log_likelihood_from_array(res.x, **self.kwargs_lik)
+        if plot:
+            _ = self.multi_spec.simulateSpectra(kwargs_values, plot=True, **self.kwargs_lik)
+
+        return logL, kwargs_values
 
 
 
@@ -44,7 +53,15 @@ class PSO(Optimizer):
         return self.pso.optimize(**kwargs)
 
 
+######### TBD: UPDATE PSO  ##########
 
+######### Implement Voigt profile ?  ##########
+
+######### TBD: MCMC SAMPLER ##########
+
+######### ALLOW PARALLELIZATION ???? ##########
+
+######### LOAD RESULTS FROM A PREVIOUS & POSSIBLY SIMPLER FIT AND SET A PRIOR ##########
 
 
 
