@@ -218,7 +218,7 @@ class FeIITemplateLines(SpectrumComponent):
     ''' Docstring TBD.
 
     Fitted parameters (linear):
-        * 'F', 'G', 'IZw1', 'S': 
+        * 'F', 'G', 'IZw1', 'S': see Kovačević et al. (2010)
     Fitted parameters (non-linear):
         * dlam: shift in the wavelength with respect to rest-frame template
         * velocity: 
@@ -230,9 +230,7 @@ class FeIITemplateLines(SpectrumComponent):
     
     def __init__(self):
         self.FeIItemplate = {}
-        self.priors = {'velocity': [3500, 500, 1, 5990], 'dlam': [0, 1, -40, 40],
-                       #'amp': [1,0.1,0,100], 'G':[0.04, 0.01,0, 10],'IZw1':[0.004, 0.001, 0,10],'S':[0.1, 0.1, 0,10]
-                      }
+        self.priors = {'velocity': [3500, 500, 700, 5990], 'dlam': [0, 1, -40, 40]}
         for feName in ['F', 'G', 'IZw1', 'S']:
             path_dict = os.path.join(os.path.dirname(os.path.realpath(__file__)), self.path_template, '%s_modDict_2.pickle' % (feName))
             modDict = pickle.load(open(path_dict, 'rb'))
@@ -249,12 +247,12 @@ class FeIITemplateLines(SpectrumComponent):
         ffes_G = G*interp.splev(lamFes, feModel)
     
         feModel = self.FeIItemplate['IZw1'][modVelocity]
-        ffes_zw = IZw1*interp.splev(lamFes, feModel)
+        ffes_Izw1 = IZw1*interp.splev(lamFes, feModel)
     
         feModel = self.FeIItemplate['S'][modVelocity]
         ffes_S = S * interp.splev(lamFes, feModel)
     
-        return ffes_F+ffes_G+ffes_zw+ffes_S
+        return ffes_F+ffes_G+ffes_Izw1+ffes_S
 
     def make_transposed_response_matrix(self, lamRest, dlam, velocity):
         #assume the same line profile for both lines in the doublet, but with an amplitude scaled by the line ratio
@@ -267,4 +265,32 @@ class FeIITemplateLines(SpectrumComponent):
         return resp_M_t
 
 
+class FeIITemplateLinesRelAmps(FeIITemplateLines):
+    ''' Same as FeIITemplateLines(), but this time the amplitude coefficients are treated as non-linear parameters (expressed relative to family F) to allow for the ratios to be shared between different images. Only the amplitude *F* of one of the family of lines is treated as a linear coefficient.
+
+     Docstring TBD.
         
+    Fitted parameters (linear):
+        * F: 
+    Fitted parameters (non-linear):
+        * dlam: shift in the wavelength with respect to rest-frame template
+        * velocity: 
+        * relG, relIZw1, relS : 
+    '''
+    
+    linear_params = ['F']
+    nonlinear_params = ['dlam', 'velocity', 'relG', 'relIZw1', 'relS']
+    
+    def __init__(self):
+        super().__init__()
+        self.priors['relG'] = [0.04, 0.01,0, 10]
+        self.priors['relIZw1'] = [0.004, 0.001, 0,10]
+        self.priors['relS'] = [0.1, 0.1, 0,10]
+
+    def make_flux(self, lamRest, dlam, velocity, F, relG, relIZw1, relS):
+        return F * super().make_flux(lamRest, dlam, velocity, 1, relG, relIZw1, relS)
+
+    def make_transposed_response_matrix(self, lamRest, dlam, velocity, relG, relIZw1, relS):
+        resp_M_t_linear = np.array(super().make_transposed_response_matrix(lamRest, dlam, velocity))
+        return [np.dot([1, relG, relIZw1, relS], resp_M_t_linear)]        
+

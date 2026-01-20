@@ -1,11 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from spectrum_model import QuasarSpectrum
 import copy
+
+from spectrum_model import QuasarSpectrum
 
 class MultiSpectrum():
 
-    def __init__(self, kwargs_data, kwargs_model, kwargs_fixed={}):
+    def __init__(self, kwargs_data, kwargs_model, kwargs_fixed):
         '''Docstring TBD.
     *kwargs_data: dictionary with entries of the form {'image_name': [rest wavelength array, flux values array, flux uncertainties array]}
     *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
@@ -16,16 +17,21 @@ class MultiSpectrum():
                                             'fixed_params': dictionary of the form {'feature': list of (non-linear) params fixed to the value of ref image} }'''
 
         self.spec_dict = {}
-        narrow_doublet_linHerm = []            
+        self.narrow_doublet_linHerm = []            
         
         for doublet in kwargs_model['narrow_doublets']:
             key = doublet[0]+'_narrow_doublet'
             if not(key in kwargs_fixed['fixed_params']) or not('relcoeffsHermite' in kwargs_fixed['fixed_params'][key]):
                  #if the Hermite series coefficients are not jointly fit between images, treat them as linear parameters 
-                narrow_doublet_linHerm.append(doublet[0])
+                self.narrow_doublet_linHerm.append(doublet[0])
+
+        FeII_linamps = not('FeII_template' in kwargs_fixed['fixed_params']) or np.all([not(key in kwargs_fixed['fixed_params']['FeII_template'])
+                                                                                       for key in ['relG', 'relIZw1', 'relS']])
+            #if none of the relative amplitude of FeII line families are jointly fit between images, treat them as linear parameters 
     
         for image_name in kwargs_data:
-            self.spec_dict[image_name] = QuasarSpectrum(data=kwargs_data[image_name], kwargs_model=kwargs_model, narrow_doublet_linHerm=narrow_doublet_linHerm)
+            self.spec_dict[image_name] = QuasarSpectrum(data=kwargs_data[image_name], kwargs_model=kwargs_model, 
+                                                        narrow_doublet_linHerm=self.narrow_doublet_linHerm, FeII_linamps = FeII_linamps)
 
         self.param_handler = ParamHandler(self.spec_dict, **kwargs_fixed)
 
@@ -127,7 +133,7 @@ class MultiSpectrum():
         Uses a dictionary of parameter values if provided, or the current values stored in the ParamHandler otherwise.'''
         if check_bounds: #check bounds first to avoid evaluating multiple images if one parameter is outside of the bounds
             if not(self.check_bounds(kwargs_nonlinear_mult=kwargs_nonlinear_mult, verbose=verbose)):
-                return -np.inf
+                return -np.inf, None
                 
         if kwargs_nonlinear_mult is None:
             kwargs_nonlinear_mult = self.param_handler.kwargs_nonlinear_mult
@@ -140,20 +146,17 @@ class MultiSpectrum():
                                                                                            tol_positive=tol_positive, mask_array=mask, check_bounds=False)
             log_lik += log_lik_image
             kwargs_values[image_name] = kwargs_values_image
-            
+
         return log_lik, kwargs_values
 
-    def log_likelihood_from_array(self, array_values_mult, update=True, mask_dict={}, tol_positive=-1e-3, check_bounds=True, verbose=False):
-        '''TBD.
-        Updates the values in the ParamHandler is update is True.'''
+    def log_likelihood_from_array(self, array_values_mult, update=True, **kwargs):
+        '''Same as log_likelihood_from_kwargs (in particular, accepts the same kwargs) but the input is an array of free non-linear parameter values (needs to be sorted according to the order in the ParamHandler. Updates the values in the ParamHandler is update is True.'''
         if update:
             self.param_handler.updatekwargs_nonlinear(value_array=array_values_mult)
-            return self.log_likelihood_from_kwargs(kwargs_nonlinear_mult=None, mask_dict=mask_dict, tol_positive=tol_positive,
-                                                   check_bounds=check_bounds, verbose=verbose)
+            return self.log_likelihood_from_kwargs(kwargs_nonlinear_mult=None, **kwargs)
         else:
             kwargs_nonlinear_mult = self.param_handler.array2kwargs_nonlinear(value_array=array_values_mult)
-            return self.log_likelihood_from_kwargs(kwargs_nonlinear_mult=kwargs_nonlinear_mult, mask_dict=mask_dict, tol_positive=tol_positive,
-                                                   check_bounds=check_bounds, verbose=verbose)
+            return self.log_likelihood_from_kwargs(kwargs_nonlinear_mult=kwargs_nonlinear_mult, **kwargs)
 
 class ParamHandler():
     '''For a single MultiSpectrum instance: handles the transformation of arrays of free non-linear parameters (used when sampling) to kwargs dictionaries with all non-linear parameters (used to simulate spectra), and vice-versa. Takes into account the non-linear parameters that are fixed to another parameter's value (specified in kwargs_fixed for MultiSpectrum).'''
@@ -176,9 +179,9 @@ class ParamHandler():
         nb_lin_params = 0 # total number of linear parameters
         for image_name in spec_dict:
             kwargs_nonlinear = {}
+            nb_lin_params += spec_dict[image_name].lin_param_handler.nb_lin_params
             for feature in spec_dict[image_name].feature_dict:
                 kwargs_nonlinear[feature] = {}
-                nb_lin_params += spec_dict[image_name].lin_param_handler.nb_lin_params
                 for param_name in spec_dict[image_name].feature_dict[feature].nonlinear_params:
                     is_fixed = (not(image_name==ref_image) and (feature in fixed_params) and (param_name in fixed_params[feature]))
                     if param_name=='relcoeffsHermite': # coefficients of Hermite series for Gauss-Hermite function representation: array of parameters, sorted from lowest to highest order, excluding order 0 when treated as non-linear parameters (relative to order 0)

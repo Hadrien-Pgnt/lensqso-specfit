@@ -1,15 +1,16 @@
 __author__ = "hpaugnat"
 
 import numpy as np
-import QSO_spectral_features as spec_feat
 import copy
 import matplotlib.pyplot as plt
 from cycler import cycler
 
+import QSO_spectral_features as spec_feat
+
 custom_cycler = cycler('color', ['#1f77b4', '#ff7f0e', '#2ca02c', '#8c564b', '#7f7f7f', '#9467bd', '#e377c2', '#bcbd22', '#17becf'])
 plt.rcParams['axes.prop_cycle'] = custom_cycler
 
-class KwargsModelError(Exception):
+class CustomError(Exception):
     '''Custom exception raised for specific error scenarios.'''
     def __init__(self, message):
             super().__init__(message) # Call the base class constructor
@@ -21,9 +22,10 @@ class QuasarSpectrum():
                                             'narrow_doublets': list of (name, nb), where 1+nb is the number of Gauss-Hermite polynomials used
                                             'single_lines': list of (name or wavelength, nb, nature), where 1+nb is the number of Gauss-Hermite polynomials used and nature = 'broad'/'narrow' to use a broad/narrow line prior.
                                             'Template_lines': list of names (only FeII available for now)}.
-    *narrow_doublet_linHerm: list of narrow_doublet names for which the Hermite series coefficients are treated as linear parameters. '''
+    *narrow_doublet_linHerm: list of narrow_doublet names for which the Hermite series coefficients are treated as linear parameters.
+    *FeII_linamps: bool, True if all the FeII line family amplitudes are treated as linear parameters (only F will be otherwise)'''
 
-    def __init__(self, data, kwargs_model, narrow_doublet_linHerm=[]):
+    def __init__(self, data, kwargs_model, narrow_doublet_linHerm=[], FeII_linamps=True):
         self.lambda_array = data[0]
         self.flux_array = data[1]
         self.flux_err_array = data[2]
@@ -45,7 +47,7 @@ class QuasarSpectrum():
             else:
                 raise IndexError
         except IndexError:
-            raise KwargsModelError('The continuum needs to be either \'powerlaw\' or (\'polynomial\', degree)')
+            raise CustomError('Error in kwargs_model: the continuum needs to be either \'powerlaw\' or (\'polynomial\', degree)')
 
         ## Define narrow-line doublets
         for doublet in kwargs_model['narrow_doublets']:
@@ -65,9 +67,12 @@ class QuasarSpectrum():
         ## Define template lines 
         for line in kwargs_model['Template_lines']:
             if line=='FeII':
-                self.feature_dict['FeII_template'] = spec_feat.FeIITemplateLines()
+                if FeII_linamps:
+                    self.feature_dict['FeII_template'] = spec_feat.FeIITemplateLines()
+                else:
+                    self.feature_dict['FeII_template'] = spec_feat.FeIITemplateLinesRelAmps()
             else:
-                raise KwargsModelError('Only FeII is supported in Template_lines for the moment.')
+                raise CustomError('Error in kwargs_model: only FeII is supported in Template_lines for the moment.')
 
         self.lin_param_handler = LinearParamHandler(self.feature_dict)
 
@@ -152,14 +157,14 @@ class QuasarSpectrum():
                         np.any(kwargs_nonlinear[feature][param_name] > self.feature_dict[feature].priors[param_name][3])):                
                         #check if any element of the array is outside the bounds
                         if verbose:
-                            print(feature + '_' + param_name + 'is out of prior bounds: value is ', kwargs_nonlinear[feature][param_name], 'but bounds are [',
+                            print(feature + '_' + param_name + ' is out of prior bounds: value is ', kwargs_nonlinear[feature][param_name], 'but bounds are [',
                                   self.feature_dict[feature].priors[param_name][2], ',', self.feature_dict[feature].priors[param_name][3], ']')
                         return False
                 else: #one parameter, single numerical value (NB: polynomial coeffs are necessarily linear so cannot be fixed)
                     if (kwargs_nonlinear[feature][param_name] < self.feature_dict[feature].priors[param_name][2] or
                         kwargs_nonlinear[feature][param_name] > self.feature_dict[feature].priors[param_name][3]):
                         if verbose:
-                            print(feature + '_' + param_name + 'is out of prior bounds: value is ', kwargs_nonlinear[feature][param_name], 'but bounds are [',
+                            print(feature + '_' + param_name + ' is out of prior bounds: value is ', kwargs_nonlinear[feature][param_name], 'but bounds are [',
                                   self.feature_dict[feature].priors[param_name][2], ',', self.feature_dict[feature].priors[param_name][3], ']')
                         return False
         return True
