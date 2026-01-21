@@ -7,14 +7,16 @@ from spectrum_model import QuasarSpectrum
 class MultiSpectrum():
 
     def __init__(self, kwargs_data, kwargs_model, kwargs_fixed):
-        '''Docstring TBD.
+        '''Class to jointly model multiple quasar spectra with the same spectral features (continuum + emission lines, separated between singlets, narrow doublets, and template of families of lines), e.g. the spectra from the different images of a multiply imaged quasar.
+        
     *kwargs_data: dictionary with entries of the form {'image_name': [rest wavelength array, flux values array, flux uncertainties array]}
     *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
                                             'narrow_doublets': list of pairs (name, nb), where 1+nb is the number of Gauss-Hermite polynomials used
                                             'single_lines': list of pairs (name or wavelength, nb, nature), where 1+nb is the number of Gauss-Hermite polynomials used and nature = 'broad'/'narrow' to use a broad/narrow line prior.
                                             'Template_lines': list of names (only FeII available for now)} 
     *kwargs_fixed: dictionary of the form {'ref_image':  image_name, 
-                                            'fixed_params': dictionary of the form {'feature': list of (non-linear) params fixed to the value of ref image} }'''
+                                            'fixed_params': dictionary of the form {'feature': list of (non-linear) params} }.
+                    If a parameter is in fixed_params, its value will be shared across all images (and only the value for ref_image will be sampled).'''
 
         self.spec_dict = {}
         self.narrow_doublet_linHerm = []            
@@ -61,7 +63,8 @@ class MultiSpectrum():
                                 self.param_handler.kwargs_nonlinear_mult[ref_image][feature][param_name]
 
     def get_priors(self, feature, images='all'):
-        '''Docstring TBD.'''
+        '''Returns the priors on the parameters describing the spectral feature *feature*.
+        Parameter *images* takes a list of image names and returns the priors for each of those images, if ='all', returns for all images.''''
         prior_dict = {}
         if images == 'all':
             images = self.spec_dict.keys()
@@ -70,14 +73,16 @@ class MultiSpectrum():
         return prior_dict
 
     def set_priors(self, feature, priors, images='all'):
-        '''Docstring TBD.'''
+        '''Updates the priors on the parameters describing the spectral feature *feature*, with the values contained in *priors*.
+        Parameter *images* takes a list of image names and returns the priors for each of those images, if ='all', returns for all images.'''
         if images == 'all':
             images = self.spec_dict.keys()
         for image_name in images:
             self.spec_dict[image_name].set_priors(feature, priors)
 
     def get_bounds_free_nonlinear_params(self):
-        '''Docstring TBD.'''
+        '''Returns an array with the upper/lower bounds in the priors for all of the free (i.e., not fixed to another value) and non-linear parameters.
+        The parameters are sorted according to the order in the ParamHandler.'''
         N = len(self.param_handler.free_nonlinear_param_list)
         bounds = np.zeros((N,2))
         for i in range(N):
@@ -89,7 +94,8 @@ class MultiSpectrum():
         return bounds  
         
     def get_init_sample_distrib_free_nonlinear_params(self):
-        '''Docstring TBD.'''
+        '''Returns 2 arrays with the means and std deviations characterizing the Gaussian priors for all of the free and non-linear parameters.
+        The parameters are sorted according to the order in the ParamHandler.'''
         N = len(self.param_handler.free_nonlinear_param_list)
         values, sigs = np.zeros(N), np.zeros(N)
         for i in range(N):
@@ -103,7 +109,16 @@ class MultiSpectrum():
         return values, sigs  
 
     def simulateSpectra(self, kwargs_values_mult, mask_dict={}, tol_positive=-1e-3, plot=False):
-        '''Docstring TBD.'''
+        '''Given a set of parameter values, generates the model spectra for all images by calculating the flux for each wavelength in self.lambda_array.
+        
+        Inputs:
+        *kwargs_values_mult:  dictionary of the form {image1: kwargs_values1, image2: kwargs_values2,...} where kwargs_values contains numerical values for all the parameters (linear AND nonlinear) of the corresponding image.
+        *mask_dict: dictionary of the form {image1: mask1, image2: mask2,...} where mask is boolean array indicating which wavelengths should be included (in the likelihood calculation / plot / optimization of linear parameters) for the corresponding image.
+        *tol_positive: consider that fluxes above this value are still positive.
+        *plot: boolean. If True, will plot the fits.
+        
+        Outputs:
+        * sim_specs:  dictionary of the form {image1: sim_spec1, image2: sim_spec2,...} where sim_spec is the simulated spectrum for the corresponding image.'''
         sim_specs = {}
         if plot:
             N_img = len(self.spec_dict.keys())
@@ -129,8 +144,19 @@ class MultiSpectrum():
         return True        
 
     def log_likelihood_from_kwargs(self, kwargs_nonlinear_mult=None, mask_dict={}, tol_positive=-1e-3, check_bounds=True, verbose=False):
-        '''TBD.
-        Uses a dictionary of parameter values if provided, or the current values stored in the ParamHandler otherwise.'''
+        '''Uses the input spectra given during the initialization (flux with uncertainties for each wavelength) to compute the log-likelihood (joint across the multiple images) for a given set of non-linear parameters (the linear parameters are automatically optimized, using a MLE estimate).
+        
+        Inputs:
+        *kwargs_nonlinear_mult:  dictionary of the form {image1: kwargs_nonlin1, image2: kwargs_nonlin2,...} where kwargs_nonlin contains numerical values for all the non-linear parameters of the corresponding image. If =None, the values stored in the ParamHandler are used.
+        *mask_dict: dictionary of the form {image1: mask1, image2: mask2,...} where mask is boolean array indicating which wavelengths should be included for the corresponding image.
+        *tol_positive: consider that fluxes above this value are still positive.
+        *check_bounds: if True, will check if all the non-linear parameters are within the bounds of their prior, and set the log-likelihood to -inf if one of them is outside the bounds.
+        *verbose: if True, will print which parameter is outside the bounds and for which image, if any.
+        
+        Outputs:
+        *log_lik: the log-likelihood value
+        *kwargs_values: a dictionary with all the parameter values (linear AND non-linear)
+        '''
         if check_bounds: #check bounds first to avoid evaluating multiple images if one parameter is outside of the bounds
             if not(self.check_bounds(kwargs_nonlinear_mult=kwargs_nonlinear_mult, verbose=verbose)):
                 return -np.inf, None
@@ -150,7 +176,8 @@ class MultiSpectrum():
         return log_lik, kwargs_values
 
     def log_likelihood_from_array(self, array_values_mult, update=True, **kwargs):
-        '''Same as log_likelihood_from_kwargs (in particular, accepts the same kwargs) but the input is an array of free non-linear parameter values (needs to be sorted according to the order in the ParamHandler. Updates the values in the ParamHandler is update is True.'''
+        '''Same as log_likelihood_from_kwargs (in particular, accepts the same kwargs) but instead of a dictionary (kwargs_nonlinear_mult), the main input is an array of free non-linear parameter values *array_values_mult* (needs to be sorted according to the order in the ParamHandler). 
+        Updates the values in the ParamHandler if *update* is True.'''
         if update:
             self.param_handler.updatekwargs_nonlinear(value_array=array_values_mult)
             return self.log_likelihood_from_kwargs(kwargs_nonlinear_mult=None, **kwargs)
@@ -159,7 +186,8 @@ class MultiSpectrum():
             return self.log_likelihood_from_kwargs(kwargs_nonlinear_mult=kwargs_nonlinear_mult, **kwargs)
 
 class ParamHandler():
-    '''For a single MultiSpectrum instance: handles the transformation of arrays of free non-linear parameters (used when sampling) to kwargs dictionaries with all non-linear parameters (used to simulate spectra), and vice-versa. Takes into account the non-linear parameters that are fixed to another parameter's value (specified in kwargs_fixed for MultiSpectrum).'''
+    '''Class to facilitate the handling of linear parameters in MultiSpectrum: 
+transformation of arrays of free non-linear parameters (used when sampling) to kwargs dictionaries with all non-linear parameters (used to simulate spectra), and vice-versa. Takes into account the non-linear parameters that are fixed to another parameter's value (specified in kwargs_fixed for MultiSpectrum).'''
 
     def __init__(self, spec_dict, ref_image, fixed_params):
         self.free_nonlinear_param_list = []

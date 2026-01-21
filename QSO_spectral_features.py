@@ -215,13 +215,13 @@ class NarrowDoubletRelShape(NarrowDoublet):
 
 
 class FeIITemplateLines(SpectrumComponent):
-    ''' Docstring TBD.
+    ''' Uses a template from Kovačević et al. (2010) to represent the optical FeII emission lines (λλ4400–5400) with several group.
 
     Fitted parameters (linear):
-        * 'F', 'G', 'IZw1', 'S': see Kovačević et al. (2010)
+        * 'F', 'G', 'IZw1', 'S': amplitude of each group of lines, see Kovačević et al. (2010)
     Fitted parameters (non-linear):
         * dlam: shift in the wavelength with respect to rest-frame template
-        * velocity: 
+        * velocity: velocity dispersion in the FeII emission region (sets the line widths)
     '''
     
     linear_params = ['F', 'G', 'IZw1', 'S']
@@ -266,18 +266,16 @@ class FeIITemplateLines(SpectrumComponent):
 
 
 class FeIITemplateLinesRelAmps(FeIITemplateLines):
-    ''' Same as FeIITemplateLines(), but this time the amplitude coefficients are treated as non-linear parameters (expressed relative to family F) to allow for the ratios to be shared between different images. Only the amplitude *F* of one of the family of lines is treated as a linear coefficient.
-
-     Docstring TBD.
+    ''' Same as FeIITemplateLines(), but this time the amplitude coefficients are treated as non-linear parameters (expressed relative to group F) to allow for the ratios to be shared between different images. Only the amplitude *F* of one of the groups of lines is treated as a linear coefficient.
         
     Fitted parameters (linear):
-        * F: 
+        * F:  amplitude for the group of lines labeled F in Kovačević et al. (2010)
     Fitted parameters (non-linear):
         * dlam: shift in the wavelength with respect to rest-frame template
-        * velocity: 
-        * relG, relIZw1, relS : 
+        * velocity:  velocity dispersion in the FeII emission region (sets the line widths)
+        * relG, relIZw1, relS : ratio of the amplitude of group G (resp., IZw1, and S) to the amplitude of group F, with the labels from Kovačević et al. (2010)
     '''
-    
+
     linear_params = ['F']
     nonlinear_params = ['dlam', 'velocity', 'relG', 'relIZw1', 'relS']
     

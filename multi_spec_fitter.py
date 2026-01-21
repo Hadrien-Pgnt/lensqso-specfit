@@ -16,12 +16,20 @@ from spectrum_model import CustomError
 
 
 class Optimizer():
+    '''Base class to optimize the parameters in a joint model of multiple quasar spectra with the same spectral features.
+
+        Inputs:
+        *multi_spec: instance of MultiSpectrum() class
+        *kwargs_likelihood: dictionary of the form {'mask_dict': dictionary of mask arrays for each image, 
+                                                    'tol_positive': float}.
+        *init_array: array of values for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess during the optimization. If None, the mean values of the priors are used.
+        *sigs_array: array of uncertainties for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess for the spread of values during the optimization. If None, the std deviations of the priors are used.
+        '''
 
     def __init__(self, multi_spec, kwargs_likelihood, init_array=None, sigs_array=None):
-        '''Docstring TBD. Uses COBYQA method for constrained optimization (needs scipy>=1.14.0).
-        multi_spec: instance of MultiSpectrum() class
-        kwargs_likelihood: dictionary of the form {'mask_dict': dictionary of mask arrays for each image, 
-                                                    'tol_positive': float}.'''
+
         self.multi_spec = multi_spec
         
         self.multi_spec.set_initial_values()
@@ -36,7 +44,14 @@ class Optimizer():
         
 
     def find_MLE(self, plot=True, return_array=False):
-        '''Should update the ParamHandler kwargs values automatically'''
+        ''' Uses the COBYQA method for constrained optimization (needs scipy>=1.14.0) to find the values for the free, non-linear parameters maximizing the likelihood. Should update the ParamHandler kwargs values automatically in self.multi_spec.
+        Uses the lower/upper bounds prescribed in the priors.
+        If plot is True, displays the best-fit model.
+        
+        Outputs:
+        *logL: the maximum log-likelihood value that was found during the optimization
+        *kwargs_values: the dictionary of all parameter values (linear and non-linear, free and fixed) maximizing the likelihood.
+        If return_array is True, also returns *res.x*, the array of free, non-linear parameters maximizing the likelihood (sorted according to the order in the ParamHandler of self.multi_spec).'''
         res = minimize(lambda a : -self.multi_spec.log_likelihood_from_array(a, **self.kwargs_lik)[0], 
                        x0 = self.init_array, bounds = self.bounds_array, method='COBYQA')
         
@@ -52,9 +67,21 @@ class Optimizer():
 
 
 class PSO(Optimizer):
+    '''Child class of Optimizer, using a Point Swarm Optimization to find the max likelihood.
+     Inputs:
+        *multi_spec: instance of MultiSpectrum() class
+        *kwargs_likelihood: dictionary of the form {'mask_dict': dictionary of mask arrays for each image, 
+                                                    'tol_positive': float}.
+        *n_particles: number of particles used by the PSO.
+         *init_array: array of values for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess during the optimization. If None, the mean values of the priors are used.
+        *sigs_array: array of uncertainties for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess for the spread of values during the optimization. If None, the std deviations of the priors are used.
+
+    '''
     
-    def __init__(self, multi_spec, n_particles, kwargs_likelihood={}):
-        super().__init__(multi_spec, kwargs_likelihood)
+    def __init__(self, multi_spec, n_particles, kwargs_likelihood={}, init_array=None, sigs_array=None):
+        super().__init__(multi_spec, kwargs_likelihood, init_array, sigs_array)
         self.pso = ParticleSwarmOptimizer(func=(lambda a : self.multi_spec.log_likelihood_from_array(a, **self.kwargs_lik)[0]), particle_count = n_particles,
                                           low=self.bounds_array[:,0], high=self.bounds_array[:,1])
 
@@ -69,7 +96,15 @@ class PSO(Optimizer):
         self.pso.swarm = swarm
 
     def optimize(self, plot=True, return_all=False, **kwargs):
-        '''Should update the ParamHandler kwargs values automatically'''
+        '''Uses a PSO algorithm (relies on the implementation in lenstronomy) to find the values for the free, non-linear parameters maximizing the likelihood. Should update the ParamHandler kwargs values automatically in self.multi_spec.
+        Uses the lower/upper bounds prescribed in the priors.
+        If plot is True, displays the best-fit model.
+        Passes *kwargs* to lenstronomy.Sampling.Samplers.pso.‎ParticleSwarmOptimizer.optimize (in particular, 'max_iter' will set the max number of iterations).
+        
+        Outputs:
+        *logL: the maximum log-likelihood value that was found during the optimization
+        *kwargs_values_best: the dictionary of all parameter values (linear and non-linear, free and fixed) maximizing the likelihood.
+        If return_all is True, also returns *global_best*, the array of free, non-linear parameters maximizing the likelihood (sorted according to the order in the ParamHandler of self.multi_spec), and the PSO chain (list of log-likelihoods and particle positions/velocities).'''
 
         time_start = time.time()
         global_best, [log_likelihood_list, pos_list, vel_list] = self.pso.optimize(**kwargs)
@@ -86,16 +121,24 @@ class PSO(Optimizer):
 
 
 class MCMCSampler(Optimizer):
+    '''Child class of Optimizer, using a Markov Chain Monte-Carlo algorithm to explore the likelihood.'''
     
      def run_mcmc(self, n_walkers, n_run, n_burn, thin=1, backend_filename=None, start_from_backend=False, skip_initial_state_check=False):
          '''Run MCMC with emcee (see documentation in emcee package for more detail)
+
+         Inputs:
          *n_walkers: number of walkers in the emcee process
          *number of sampling (after burn-in) of the emcee
          * number of burn-in iterations (those will not be saved in the output sample)
          *backend_filename: name of the HDF5 file where sampling state is saved (through emcee backend engine)
          *start_from_backend: bool, if True, start from the state saved in `backup_filename`.
          Otherwise, create a new backup file with name `backup_filename` (any already existing file is overwritten!).
-         Returns: samples, log-likelihood of samples
+         
+         Returns: 
+         *dist[ind_best]: the maximum log-likelihood value that was found during the exploration
+         *kwargs_values_best: the dictionary of all parameter values (linear and non-linear, free and fixed) maximizing the likelihood.
+         *flat_samples: MCMC chain (list of all samples)
+         *dist: log-likelihood of samples in the chain
          '''
          self.n_walkers = n_walkers
          num_param_nonlinear = len(self.multi_spec.param_handler.free_nonlinear_param_list)
@@ -163,7 +206,18 @@ class MCMCSampler(Optimizer):
 
     
      def narrow_doublet_flux_ratio_posterior(self, narrow_doublet_name, samples=None, n_samples=1000, n_burn_add=0):
-         ''' Docstring TBD.'''
+         '''Calculates a posterior probability distribution on the narrow-line region flux ratios, with respect to the reference image (input of the MultiSpectrum() instance) from model parameter samples.
+         
+         Inputs:
+         *narrow_doublet_name: label of the narrow doublet used for flux-ratio calculation.
+         *samples: list of parameter samples. If None, uses the MCMC chain stored in the class (requires a run_mcmc beforehand).
+         *n_samples: number of random re-samples of the chain to estimate the posterior
+         *n_burn_add: number of samples to ignore at the start of the chain, to avoid re-sampling parts of the chain where the MCMC had not yet converged.
+         
+         Outputs:
+         * narrow_doublet_fluxratios: array of flux-ratio values
+         * list(fr_names.keys()): list of labels for the flux ratios
+         '''
          
          if samples is None:
              samples = self.samples_mcmc
@@ -222,9 +276,19 @@ class MCMCSampler(Optimizer):
 
 class FittingSequence():
 
-    '''Docstring TBD. 
-        fit_param_list: list with entries of the form (type, kwargs) with type in ['COBYQA', 'PSO', 'MCMC', 'update_kwargs_likelihood'].
-        '''
+    '''Class to iteratively run several optimizers. 
+    Inputs:
+        *fit_param_list: list with entries of the form (type, kwargs) with type in ['COBYQA', 'PSO', 'MCMC', 'update_kwargs_likelihood']
+            and kwargs a dictionary corresponding to the format asked by the corresponding class. 
+            For 'update_kwargs_likelihood', kwargs needs to be a dictionary with a subset of the expected entries in kwargs_likelihood.
+        *multi_spec: instance of MultiSpectrum() class
+        *kwargs_likelihood: dictionary of the form {'mask_dict': dictionary of mask arrays for each image, 
+                                                    'tol_positive': float}.
+        *init_array: array of values for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess during the optimization. If None, the mean values of the priors are used.
+        *sigs_array: array of uncertainties for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess for the spread of values during the optimization. If None, the std deviations of the priors are used.
+    '''
 
     def __init__(self, fit_param_list, multi_spec, kwargs_likelihood, init_array=None, sigs_array=None):
         self.fit_param_list = fit_param_list
@@ -238,8 +302,15 @@ class FittingSequence():
         assert np.all([step[0] in ['COBYQA', 'PSO', 'MCMC', 'update_kwargs_likelihood'] for step in fit_param_list])
 
     def run_step(self, type, kwargs, init_array=None, sigs_array=None):
-        '''Docstring TBD. 
-        Runs a single step of the fitting sequence.
+        '''Runs a single step of the fitting sequence.
+
+        Inputs:
+        *type: one of the following: 'COBYQA', 'PSO', 'MCMC' or 'update_kwargs_likelihood'
+        *kwargs: dictionary with kwargs corresponding to the type of optimizer (see respective classes)
+        *init_array: array of values for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess during the optimization. If None, the mean values of the priors are used.
+        *sigs_array: array of uncertainties for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
+            Will be used as an initial guess for the spread of values during the optimization. If None, the std deviations of the priors are used.
         '''
         
         if type == 'COBYQA':
@@ -267,8 +338,8 @@ class FittingSequence():
                 self.kwargs_likelihood[key] = kwargs[key]
 
     def run_sequence(self):
-        '''Docstring TBD. 
-        Runs the entire fitting sequence.
+        '''Runs the entire fitting sequence, step by step.
+        Returns a list with entries corresponding to the output of each step.
         '''
         
         for step in self.fit_param_list:
@@ -277,8 +348,7 @@ class FittingSequence():
         return self.chain
 
     def plot_convergence(self):
-        '''Docstring TBD.
-        '''
+        '''Plots the behaviour during the PSO and MCMC steps in the fitting sequence.'''
         
         for step_run in self.chain:
             if step_run[0] == 'PSO':
@@ -293,6 +363,7 @@ class FittingSequence():
                 print('No convergence plot for step: '+ step_run[0])
 
     def get_kwargs_values_best(self, plot=True):
+        '''Returns a dictionary with all the parameter values (free/fixed, linear AND non-linear) that correspond to the best fit that has been found throughout the entire fitting sequence.'''
         step_best = np.argmax([step_run[1] for step_run in self.chain])
         kwargs_values_best = self.chain[step_best][2]
         if plot:

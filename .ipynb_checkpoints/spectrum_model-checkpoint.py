@@ -16,8 +16,8 @@ class CustomError(Exception):
             super().__init__(message) # Call the base class constructor
 
 class QuasarSpectrum():
-    '''Docstring TBD.
-    *data: list with [rest wavelength array, flux values array, flux uncertainties array] (all need to have the same shape
+    '''Class to model a single quasar spectrum with multiple spectral features (continuum + emission lines, separated between singlets, narrow doublets, and template of families of lines).
+    *data: list with [rest wavelength array, flux values array, flux uncertainties array] (all need to have the same shape)
     *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
                                             'narrow_doublets': list of (name, nb), where 1+nb is the number of Gauss-Hermite polynomials used
                                             'single_lines': list of (name or wavelength, nb, nature), where 1+nb is the number of Gauss-Hermite polynomials used and nature = 'broad'/'narrow' to use a broad/narrow line prior.
@@ -77,17 +77,26 @@ class QuasarSpectrum():
         self.lin_param_handler = LinearParamHandler(self.feature_dict)
 
     def get_priors(self, feature):
-        '''Docstring TBD.'''
+        '''Returns the priors on the parameters describing the spectral feature *feature*.'''
         return self.feature_dict[feature].priors
 
     def set_priors(self, feature, priors):
-        '''Docstring TBD.'''
+        '''Updates the priors on the parameters describing the spectral feature *feature*, with the values contained in *priors*.'''
         self.feature_dict[feature].set_priors(priors)
         
     def simulateSpectrum(self, kwargs_values, mask_array=None, tol_positive=-1e-3, plot_ax=None):
-        '''Docstring TBD.
-        mask_array: boolean array indicating which wavelengths should be included (in the likelihood calculation / plot / optimization of linear parameters.)
-        tol_positive: consider that fluxes above this value are still positive'''
+        '''Given a set of parameter values, generates the model spectrum by calculating the flux for each wavelength in self.lambda_array.
+        
+        Inputs:
+        *kwargs_values:  dictionary of the form {feature1: dict_values1, feature2: dict_values2,...} where dict_values contains numerical values for each parameter (linear AND nonlinear) of the corresponding spectral feature.
+        *mask_array: boolean array indicating which wavelengths should be included (in the likelihood calculation / plot / optimization of linear parameters.)
+        *tol_positive: consider that fluxes above this value are still positive.
+        *plot_ax: matplolib.Axes instance on which to plot the simulated spectrum. If None, does not show any plot.
+        
+        Outputs:
+        * sim_spec: the simulated spectrum
+        * check_positive: a boolean indicating whether any of the spectral features go to negative fluxes in the given wavelength range.
+        '''
 
         if mask_array is None:
             mask_array = np.ones_like(self.lambda_array)
@@ -114,9 +123,12 @@ class QuasarSpectrum():
         return sim_spec, check_positive 
 
     def make_transposed_response_matrix(self, kwargs_nonlinear, mask_array=None):
-        ''' Docstring TBD.
-        kwargs_nonlinear : dictionary containing values for all the non-linear parameters
-        mask_array: boolean array indicating which wavelengths should be included in the likelihood calculation and optimization of linear parameters.'''
+        ''' Returns the transposed linear response matrix for a given choice of non-linear parameters, i.e. M^T, where the matrix M of size (N_lam x N_lin) is such that (M*X)^T is the simulated flux, where X^T is the vector with linear parameters (of length N_lin) and N_lam is the number of data points.
+        Result should be in the form of a list of length N_lin, with each entry an array of size N_lam. 
+        
+        Inputs:
+        *kwargs_nonlinear : dictionary containing values for all the non-linear parameters
+        *mask_array: boolean array indicating which wavelengths should be included in the likelihood calculation and optimization of linear parameters.'''
         
         if mask_array is None:
             mask_array = np.ones_like(self.lambda_array)
@@ -129,9 +141,11 @@ class QuasarSpectrum():
         return resp_M_t
 
     def solve_linear_params(self, kwargs_nonlinear, mask_array=None):
-        ''' Docstring TBD. return MLE for linear param vector + expected covariance matrix
-        kwargs_nonlinear : dictionary containing values for all the non-linear parameters
-        mask_array: boolean array indicating which wavelengths should be included in the likelihood calculation and optimization of linear parameters.'''
+        ''' For a given choice of non-linear parameters, return the max-likelihood estimate (using the data given during the initialization) for the vector of linear parameters + the expected covariance matrix for these linear parameters. 
+        
+        Inputs:
+        *kwargs_nonlinear : dictionary containing values for all the non-linear parameters
+        *mask_array: boolean array indicating which wavelengths should be included in the likelihood calculation and optimization of linear parameters.'''
 
         if mask_array is None:
             mask_array = np.ones_like(self.lambda_array)
@@ -170,8 +184,20 @@ class QuasarSpectrum():
         return True
 
     def log_likelihood(self, kwargs_nonlinear, mask_array=None, tol_positive=-1e-3, check_bounds=True, verbose=False, plot_ax=None):
-        '''Docstring TBD.
-        mask_array: boolean array indicating which wavelengths should be included in the likelihood calculation and optimization of linear parameters.'''
+        '''Uses the input spectrum given during the initialization (flux with uncertainties for each wavelength) to compute the log-likelihood for a given set of non-linear parameters. The linear parameters are automatically optimized, using solve_linear_params to find the MLE.
+        
+        Inputs:
+        *kwargs_nonlinear : dictionary containing values for all the non-linear parameters
+        *mask_array: boolean array indicating which wavelengths should be included in the likelihood calculation and optimization of linear parameters.
+        *tol_positive: consider that fluxes above this value are still positive.
+        *check_bounds: if True, will check if all the non-linear parameters are within the bounds of their prior, and set the log-likelihood to -inf if one of them is outside the bounds.
+        *verbose: if True, will print which parameter is outside the bounds, if any.
+        *plot_ax: matplolib.Axes instance on which to plot the simulated spectrum. If None, does not show any plot.
+        
+        Outputs:
+        *log_lik: the log-likelihood value
+        *kwargs_values: a dictionary with all the parameter values (linear AND non-linear)
+        '''
         
         if mask_array is None:
             mask_array = np.ones_like(self.lambda_array)
@@ -196,6 +222,8 @@ class QuasarSpectrum():
                 
         
 class LinearParamHandler():
+
+    '''Class to facilitate the handling of linear parameters in QuasarSpectrum'''
 
     def __init__(self, feature_dict):
         self.linear_param_list = [] 
