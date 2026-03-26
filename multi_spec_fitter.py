@@ -21,7 +21,7 @@ class Optimizer():
         Inputs:
         *multi_spec: instance of MultiSpectrum() class
         *kwargs_likelihood: dictionary of the form {'mask_dict': dictionary of mask arrays for each image, 
-                                                    'tol_positive': float}.
+                                                    'tol_positive_dict': dictionary of numerical tolerance for flux positivity, for each image}.
         *init_array: array of values for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
             Will be used as an initial guess during the optimization. If None, the mean values of the priors are used.
         *sigs_array: array of uncertainties for each free, non-linear parameter (need to be sorted according to the order in the ParamHandler of *multi_spec*).
@@ -43,7 +43,7 @@ class Optimizer():
         self.kwargs_lik = kwargs_likelihood
         
 
-    def find_MLE(self, plot=True, return_array=False):
+    def find_MLE(self, plot=True, return_array=False, print_res_stats=True, norm_residuals=False):
         ''' Uses the COBYQA method for constrained optimization (needs scipy>=1.14.0) to find the values for the free, non-linear parameters maximizing the likelihood. Should update the ParamHandler kwargs values automatically in self.multi_spec.
         Uses the lower/upper bounds prescribed in the priors.
         If plot is True, displays the best-fit model.
@@ -57,7 +57,8 @@ class Optimizer():
         
         logL, kwargs_values = self.multi_spec.log_likelihood_from_array(res.x, **self.kwargs_lik)
         if plot:
-            _ = self.multi_spec.simulateSpectra(kwargs_values, plot=True, **self.kwargs_lik)
+            _ = self.multi_spec.simulateSpectra(kwargs_values, plot=True, print_res_stats=print_res_stats, norm_residuals=norm_residuals,
+                                                **self.kwargs_lik)
 
         if return_array:
             return logL, res.x, kwargs_values
@@ -95,7 +96,7 @@ class PSO(Optimizer):
                                   np.zeros(self.pso.param_count)))
         self.pso.swarm = swarm
 
-    def optimize(self, plot=True, return_all=False, **kwargs):
+    def optimize(self, plot=True, return_all=False, print_res_stats=True, norm_residuals=False, **kwargs):
         '''Uses a PSO algorithm (relies on the implementation in lenstronomy) to find the values for the free, non-linear parameters maximizing the likelihood. Should update the ParamHandler kwargs values automatically in self.multi_spec.
         Uses the lower/upper bounds prescribed in the priors.
         If plot is True, displays the best-fit model.
@@ -112,7 +113,8 @@ class PSO(Optimizer):
         time_end = time.time()
         print('Time taken for PSO optimization: ', time_end - time_start)
         if plot:
-            _ = self.multi_spec.simulateSpectra(kwargs_values_best, plot=True, **self.kwargs_lik)
+            _ = self.multi_spec.simulateSpectra(kwargs_values_best, plot=True, print_res_stats=print_res_stats, norm_residuals=norm_residuals,
+                                                **self.kwargs_lik)
 
         if return_all:
             return logL, kwargs_values_best, global_best, [log_likelihood_list, pos_list, vel_list]
@@ -123,7 +125,7 @@ class PSO(Optimizer):
 class MCMCSampler(Optimizer):
     '''Child class of Optimizer, using a Markov Chain Monte-Carlo algorithm to explore the likelihood.'''
     
-     def run_mcmc(self, n_walkers, n_run, n_burn, thin=1, backend_filename=None, start_from_backend=False, skip_initial_state_check=False):
+    def run_mcmc(self, n_walkers, n_run, n_burn, thin=1, backend_filename=None, start_from_backend=False, skip_initial_state_check=False):
          '''Run MCMC with emcee (see documentation in emcee package for more detail)
 
          Inputs:
@@ -186,8 +188,8 @@ class MCMCSampler(Optimizer):
          _, kwargs_values_best = self.multi_spec.log_likelihood_from_array(array_best, update=False, **self.kwargs_lik)
          
          return dist[ind_best], kwargs_values_best, flat_samples, dist
-
-     def plot_behaviour(self):
+    
+    def plot_behaviour(self):
          '''Plots the MCMC behaviour to see if the chain has converged.'''
          fig, ax = plt.subplots() 
          num_samples = len(self.samples_mcmc[:, 0])
@@ -205,7 +207,7 @@ class MCMCSampler(Optimizer):
          ax.plot(dist_normed, label="logL", color="k", linewidth=2)
 
     
-     def narrow_doublet_flux_ratio_posterior(self, narrow_doublet_name, samples=None, n_samples=1000, n_burn_add=0):
+    def narrow_doublet_flux_ratio_posterior(self, narrow_doublet_name, samples=None, n_samples=1000, n_burn_add=0):
          '''Calculates a posterior probability distribution on the narrow-line region flux ratios, with respect to the reference image (input of the MultiSpectrum() instance) from model parameter samples.
          
          Inputs:
@@ -341,9 +343,13 @@ class FittingSequence():
         '''Runs the entire fitting sequence, step by step.
         Returns a list with entries corresponding to the output of each step.
         '''
-        
-        for step in self.fit_param_list:
-            self.run_step(type=step[0], kwargs=step[1], init_array=self.state_params, sigs_array=self.state_sigs)
+
+        try:
+            for step in self.fit_param_list:
+                self.run_step(type=step[0], kwargs=step[1], init_array=self.state_params, sigs_array=self.state_sigs)
+        except ValueError:
+            print('All of the initial samples have a likelihood of -np.inf. Try increasing the tol_positive value(s) !')
+            return None
 
         return self.chain
 
@@ -362,19 +368,21 @@ class FittingSequence():
             else:
                 print('No convergence plot for step: '+ step_run[0])
 
-    def get_kwargs_values_best(self, plot=True):
+    def get_kwargs_values_best(self, plot=True, print_res_stats=True, norm_residuals=False):
         '''Returns a dictionary with all the parameter values (free/fixed, linear AND non-linear) that correspond to the best fit that has been found throughout the entire fitting sequence.'''
         step_best = np.argmax([step_run[1] for step_run in self.chain])
         kwargs_values_best = self.chain[step_best][2]
         if plot:
-            _ = self.multi_spec.simulateSpectra(kwargs_values_best, plot=True, **self.kwargs_likelihood)
+            _ = self.multi_spec.simulateSpectra(kwargs_values_best, plot=True, print_res_stats=print_res_stats, norm_residuals=norm_residuals,
+                                                **self.kwargs_likelihood)
         return kwargs_values_best
         
 
 
 
+######### add possibility to vary the narrow doublet line ratio ##########
 
-######### recode PSO to avoid lenstronomy dependecy ? ##########
+######### recode PSO to avoid lenstronomy dependency ? ##########
 
 ######### save chains as .npy files & inputs/results as .json files ?? ##########
 

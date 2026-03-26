@@ -19,13 +19,13 @@ class QuasarSpectrum():
     '''Class to model a single quasar spectrum with multiple spectral features (continuum + emission lines, separated between singlets, narrow doublets, and template of families of lines).
     *data: list with [rest wavelength array, flux values array, flux uncertainties array] (all need to have the same shape)
     *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
-                                            'narrow_doublets': list of (name, nb), where 1+nb is the number of Gauss-Hermite polynomials used
-                                            'single_lines': list of (name or wavelength, nb, nature), where 1+nb is the number of Gauss-Hermite polynomials used and nature = 'broad'/'narrow' to use a broad/narrow line prior.
-                                            'Template_lines': list of names (only FeII available for now)}.
-    *narrow_doublet_linHerm: list of narrow_doublet names for which the Hermite series coefficients are treated as linear parameters.
-    *FeII_linamps: bool, True if all the FeII line family amplitudes are treated as linear parameters (only F will be otherwise)'''
+                                            'narrow_doublets': list of (name, type, nb), where type ='GaussHermite'/'Voigt' and 1+nb is the number of Gauss-Hermite polynomials used (can be anything if type=='Voigt').
+                                            'single_lines': list of (name or wavelength, type, nb, nature), where type ='GaussHermite'/'Voigt', 1+nb is the number of Gauss-Hermite polynomials used (does not matter if type=='Voigt') and nature = 'broad'/'narrow' to use adequate priors. prior.
+                                            'Template_lines': list of names (only 'FeII_Vis' and 'FeII+MgII_NIR' available for now)}.
+    *narrow_doublet_linHerm: list of narrow_doublet names (of type 'GaussHermite') for which the Hermite series coefficients are treated as linear parameters.
+    *FeII_Vis_linamps: bool, True if all the FeII_Vis line family amplitudes are treated as linear parameters (only F will be otherwise)'''
 
-    def __init__(self, data, kwargs_model, narrow_doublet_linHerm=[], FeII_linamps=True):
+    def __init__(self, data, kwargs_model, narrow_doublet_relHerm=[], FeII_Vis_linamps=True):
         self.lambda_array = data[0]
         self.flux_array = data[1]
         self.flux_err_array = data[2]
@@ -51,28 +51,36 @@ class QuasarSpectrum():
 
         ## Define narrow-line doublets
         for doublet in kwargs_model['narrow_doublets']:
-            if doublet[0] in narrow_doublet_linHerm: #Hermite coefficients are included as linear parameters
-                self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoublet(name=doublet[0], degree=doublet[1])
-            else: #only c_0 (the coefficient in front of H_0) is treated as a linear parameter, the other coefficients are expressed relative to c_0 and are sampled as non-linear parameters
-                self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoubletRelShape(name=doublet[0], degree=doublet[1])
+            if doublet[0] in narrow_doublet_relHerm: #only c_0 (the coefficient in front of H_0) is treated as a linear parameter, the other coefficients are expressed relative to c_0 and are sampled as non-linear parameters
+                self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoubletGaussHermiteRelShape(name=doublet[0], degree=doublet[2])
+                
+            else: #Hermite coefficients will be treated as linear parameters if doublet is GaussianHermite
+                self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoublet(name=doublet[0], type=doublet[1], degree=doublet[2])
+                
                 
         ## Define single lines 
         for line in kwargs_model['single_lines']:
-            assert (line[2]=='broad' or line[2]=='narrow')
+            assert (line[3]=='broad' or line[3]=='narrow')
             if isinstance(line[0], str):
-                self.feature_dict[line[0]+'_'+ line[2]] = spec_feat.SingleLine(name=line[0], degree=line[1], broad=(line[2]=='broad'))
+                name = line[0]
+                lambda_rest = None
             else:
-                self.feature_dict['Line_at_'+line[0]+'_'+ line[2]] = spec_feat.Line(lambda_rest=line[0], degree=line[1], broad=(line[2]=='broad'))
+                name = 'Line_at_'+line[0]
+                lambda_rest = line[0]             
+            self.feature_dict[name+'_'+ line[3]] = spec_feat.SingleLine(name=name, type=line[1], degree=line[2], 
+                                                                           broad=(line[3]=='broad'), lambda_rest=lambda_rest)
 
         ## Define template lines 
-        for line in kwargs_model['Template_lines']:
-            if line=='FeII':
-                if FeII_linamps:
-                    self.feature_dict['FeII_template'] = spec_feat.FeIITemplateLines()
+        for template in kwargs_model['Template_lines']:
+            if template=='FeII_Vis':
+                if FeII_Vis_linamps:
+                    self.feature_dict['FeII_Vis_template'] = spec_feat.FeII_Vis_TemplateLines()
                 else:
-                    self.feature_dict['FeII_template'] = spec_feat.FeIITemplateLinesRelAmps()
+                    self.feature_dict['FeII_Vis_template'] = spec_feat.FeII_Vis_TemplateLines_RelAmps()
+            elif template=='FeII+MgII_NIR':
+                    self.feature_dict['FeII+MgII_NIR_template'] = spec_feat.FeIIMgII_NIR_TemplateLines()
             else:
-                raise CustomError('Error in kwargs_model: only FeII is supported in Template_lines for the moment.')
+                raise CustomError('Error in kwargs_model: only FeII_Vis and FeII+MgII_NIR are supported in Template_lines for the moment.')
 
         self.lin_param_handler = LinearParamHandler(self.feature_dict)
 
@@ -84,14 +92,16 @@ class QuasarSpectrum():
         '''Updates the priors on the parameters describing the spectral feature *feature*, with the values contained in *priors*.'''
         self.feature_dict[feature].set_priors(priors)
         
-    def simulateSpectrum(self, kwargs_values, mask_array=None, tol_positive=-1e-3, plot_ax=None):
+    def simulateSpectrum(self, kwargs_values, mask_array=None, tol_positive=-1e-3, plot_axes=None, norm_residuals=False, print_res_stats=False):
         '''Given a set of parameter values, generates the model spectrum by calculating the flux for each wavelength in self.lambda_array.
         
         Inputs:
         *kwargs_values:  dictionary of the form {feature1: dict_values1, feature2: dict_values2,...} where dict_values contains numerical values for each parameter (linear AND nonlinear) of the corresponding spectral feature.
         *mask_array: boolean array indicating which wavelengths should be included (in the likelihood calculation / plot / optimization of linear parameters.)
         *tol_positive: consider that fluxes above this value are still positive.
-        *plot_ax: matplolib.Axes instance on which to plot the simulated spectrum. If None, does not show any plot.
+        *plot_axes: list or tuple of two matplolib.Axes instances on which to plot the simulated spectrum and the residuals. If None, does not show any plot.
+        *norm_residuals: if True, will plot normalized resiudals on plot_axes[1] (otherwise absolute residuals with errorbars)
+        *print_res_stats: if True, print the mean and std deviation of the normalized residuals.
         
         Outputs:
         * sim_spec: the simulated spectrum
@@ -107,18 +117,40 @@ class QuasarSpectrum():
         check_positive = True #test whether all the individual spectral components have positive flux
         for feature in self.feature_dict:    
             sim_feat = self.feature_dict[feature].make_flux(self.lambda_array, **kwargs_values[feature])
-            check_positive *= (np.min(sim_feat*mask_array)>=tol_positive) #change check_positive to False if the flux goes below tol_positive
+            if feature == 'FeII+MgII_NIR_template': #the template has some absorption lines -> only check if the amplitude is positive
+                check_positive *= (kwargs_values[feature]['amp']>=0)
+            else:
+                check_positive *= (np.min(sim_feat*mask_array)>=tol_positive) #change check_positive to False if the flux goes below tol_positive
             sim_spec += sim_feat
-            if plot_ax is not None:
-                plot_ax.plot(self.lambda_array, sim_feat, label=feature)
+            if plot_axes is not None:
+                plot_axes[0].plot(self.lambda_array, sim_feat, label=feature)
 
-        if plot_ax is not None:
-            plot_ax.errorbar(self.lambda_array[mask_array>0], self.flux_array[mask_array>0], xerr=None, yerr=self.flux_err_array[mask_array>0], 
-                             fmt = '.', label='data', color='k', zorder=0)
-            plot_ax.plot(self.lambda_array, sim_spec, label='total', color='#d62728')
-            plot_ax.legend()
-            plt.xlabel(r'Rest wavelength ($\AA$)')
-            plt.ylabel(r'Flux (in input units)' )
+        
+        if plot_axes is not None:
+            if len(plot_axes) <2:
+                raise CustomError('Need at least two plot_axes to show the model and the residuals !')
+            plot_axes[0].errorbar(self.lambda_array[mask_array>0], self.flux_array[mask_array>0], 
+                                  xerr=None, yerr=self.flux_err_array[mask_array>0], 
+                                  fmt = '.', label='data', color='k', zorder=0)
+            plot_axes[0].plot(self.lambda_array, sim_spec, label='total', color='#d62728')
+            plot_axes[0].legend()
+            plot_axes[0].set_ylabel(r'Flux (in input units)' )
+
+            if norm_residuals:
+                plot_axes[1].plot(self.lambda_array[mask_array>0], (sim_spec[mask_array>0]-self.flux_array[mask_array>0])/self.flux_err_array[mask_array>0], c='tab:grey', ls='', marker='.')
+                plot_axes[1].set_ylabel(r'Normalized residuals')
+                plot_axes[1].set_ylim(-5,5)
+            else:
+                plot_axes[1].errorbar(self.lambda_array[mask_array>0], (sim_spec[mask_array>0]-self.flux_array[mask_array>0]),
+                                      xerr=None, yerr=self.flux_err_array[mask_array>0], color='tab:grey', fmt = '.')
+                plot_axes[1].set_ylabel(r'Residuals')
+
+            plot_axes[1].axhline(0, ls='dashed', c='k')
+            plot_axes[1].set_xlabel(r'Rest wavelength ($\AA$)')
+
+        if print_res_stats:
+            norm_res = (sim_spec[mask_array>0]-self.flux_array[mask_array>0])/self.flux_err_array[mask_array>0]
+            print(f'Normalized residuals have mean {np.mean(norm_res):.2f} and std dev {np.std(norm_res):.2f}')
 
         return sim_spec, check_positive 
 
@@ -183,7 +215,7 @@ class QuasarSpectrum():
                         return False
         return True
 
-    def log_likelihood(self, kwargs_nonlinear, mask_array=None, tol_positive=-1e-3, check_bounds=True, verbose=False, plot_ax=None):
+    def log_likelihood(self, kwargs_nonlinear, mask_array=None, tol_positive=-1e-3, check_bounds=True, verbose=False, **kwargs_out):
         '''Uses the input spectrum given during the initialization (flux with uncertainties for each wavelength) to compute the log-likelihood for a given set of non-linear parameters. The linear parameters are automatically optimized, using solve_linear_params to find the MLE.
         
         Inputs:
@@ -192,7 +224,7 @@ class QuasarSpectrum():
         *tol_positive: consider that fluxes above this value are still positive.
         *check_bounds: if True, will check if all the non-linear parameters are within the bounds of their prior, and set the log-likelihood to -inf if one of them is outside the bounds.
         *verbose: if True, will print which parameter is outside the bounds, if any.
-        *plot_ax: matplolib.Axes instance on which to plot the simulated spectrum. If None, does not show any plot.
+        *kwargs_out: kwargs (*plot_axes*, *norm_residuals*, *print_res_stats*) for the outputs of simulateSpectrum (see above)
         
         Outputs:
         *log_lik: the log-likelihood value
@@ -211,7 +243,7 @@ class QuasarSpectrum():
         X_opt, Sigma_X = self.solve_linear_params(kwargs_nonlinear, mask_array=mask_array)
         kwargs_values = self.lin_param_handler.add_linear_values_to_kwargs(lin_values_array=X_opt, kwargs_nonlinear=kwargs_nonlinear)
 
-        sim_spec, check_positive = self.simulateSpectrum(kwargs_values, mask_array=mask_array, tol_positive=tol_positive, plot_ax=plot_ax)
+        sim_spec, check_positive = self.simulateSpectrum(kwargs_values, mask_array=mask_array, tol_positive=tol_positive, **kwargs_out)
         if not(check_positive): #if one of the spectral components has negative flux somewhere in the wavelength range
             return -np.inf, kwargs_values
 

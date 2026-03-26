@@ -13,27 +13,27 @@ class MultiSpectrum():
     *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
                                             'narrow_doublets': list of pairs (name, nb), where 1+nb is the number of Gauss-Hermite polynomials used
                                             'single_lines': list of pairs (name or wavelength, nb, nature), where 1+nb is the number of Gauss-Hermite polynomials used and nature = 'broad'/'narrow' to use a broad/narrow line prior.
-                                            'Template_lines': list of names (only FeII available for now)} 
+                                            'Template_lines': list of names (only 'FeII_Vis' and 'FeII+MgII_NIR' available for now)} 
     *kwargs_fixed: dictionary of the form {'ref_image':  image_name, 
                                             'fixed_params': dictionary of the form {'feature': list of (non-linear) params} }.
                     If a parameter is in fixed_params, its value will be shared across all images (and only the value for ref_image will be sampled).'''
 
         self.spec_dict = {}
-        self.narrow_doublet_linHerm = []            
+        self.narrow_doublet_relHerm = []            
         
         for doublet in kwargs_model['narrow_doublets']:
             key = doublet[0]+'_narrow_doublet'
-            if not(key in kwargs_fixed['fixed_params']) or not('relcoeffsHermite' in kwargs_fixed['fixed_params'][key]):
+            if (key in kwargs_fixed['fixed_params']) and ('relcoeffsHermite' in kwargs_fixed['fixed_params'][key]):
                  #if the Hermite series coefficients are not jointly fit between images, treat them as linear parameters 
-                self.narrow_doublet_linHerm.append(doublet[0])
+                self.narrow_doublet_relHerm.append(doublet[0])
 
-        FeII_linamps = not('FeII_template' in kwargs_fixed['fixed_params']) or np.all([not(key in kwargs_fixed['fixed_params']['FeII_template'])
+        FeII_Vis_linamps = not('FeII_Vis_template' in kwargs_fixed['fixed_params']) or np.all([not(key in kwargs_fixed['fixed_params']['FeII_Vis_template'])
                                                                                        for key in ['relG', 'relIZw1', 'relS']])
             #if none of the relative amplitude of FeII line families are jointly fit between images, treat them as linear parameters 
     
         for image_name in kwargs_data:
             self.spec_dict[image_name] = QuasarSpectrum(data=kwargs_data[image_name], kwargs_model=kwargs_model, 
-                                                        narrow_doublet_linHerm=self.narrow_doublet_linHerm, FeII_linamps = FeII_linamps)
+                                                        narrow_doublet_relHerm=self.narrow_doublet_relHerm, FeII_Vis_linamps = FeII_Vis_linamps)
 
         self.param_handler = ParamHandler(self.spec_dict, **kwargs_fixed)
 
@@ -64,7 +64,7 @@ class MultiSpectrum():
 
     def get_priors(self, feature, images='all'):
         '''Returns the priors on the parameters describing the spectral feature *feature*.
-        Parameter *images* takes a list of image names and returns the priors for each of those images, if ='all', returns for all images.''''
+        Parameter *images* takes a list of image names and returns the priors for each of those images, if ='all', returns for all images.'''
         prior_dict = {}
         if images == 'all':
             images = self.spec_dict.keys()
@@ -108,27 +108,46 @@ class MultiSpectrum():
                 sigs[i] = self.spec_dict[image_name].feature_dict[feature].priors[param_name][1]
         return values, sigs  
 
-    def simulateSpectra(self, kwargs_values_mult, mask_dict={}, tol_positive=-1e-3, plot=False):
+    def simulateSpectra(self, kwargs_values_mult, mask_dict={}, tol_positive=-1e-3, tol_positive_dict={}, 
+                        plot=False, norm_residuals=False, print_res_stats=False):
         '''Given a set of parameter values, generates the model spectra for all images by calculating the flux for each wavelength in self.lambda_array.
         
         Inputs:
         *kwargs_values_mult:  dictionary of the form {image1: kwargs_values1, image2: kwargs_values2,...} where kwargs_values contains numerical values for all the parameters (linear AND nonlinear) of the corresponding image.
         *mask_dict: dictionary of the form {image1: mask1, image2: mask2,...} where mask is boolean array indicating which wavelengths should be included (in the likelihood calculation / plot / optimization of linear parameters) for the corresponding image.
-        *tol_positive: consider that fluxes above this value are still positive.
+        *tol_positive: consider that fluxes above this value are still positive. Use this values for all the images unless specified in tol_positive_dict.
+        *tol_positive_dict: dictionary of the form {image1: tol1, image2: tol2,...} where tol is a value above which fluxes are still considered positive (numerical tolerance) for the corresponding image.
         *plot: boolean. If True, will plot the fits.
+        *norm_residuals: If True, will plot normalized resiudals (otherwise absolute residuals with errorbars) for each image.
+        *print_res_stats: if True, print the mean and std deviation of the normalized residuals for each image.
         
         Outputs:
         * sim_specs:  dictionary of the form {image1: sim_spec1, image2: sim_spec2,...} where sim_spec is the simulated spectrum for the corresponding image.'''
         sim_specs = {}
         if plot:
             N_img = len(self.spec_dict.keys())
-            fig, axes = plt.subplots(N_img, 1, figsize= (10, 5*N_img))
+            #fig, axes = plt.subplots(2*N_img, 1, figsize= (10, 7*N_img), height_ratios=[5,2]*N_img)
+            axes_nested = []
+            fig, axes = plt.subplots(N_img, 1, layout='constrained', figsize= (10, 7*N_img))
+            gridspec = axes[0].get_subplotspec().get_gridspec()
+            for i in range(N_img):
+                axes[i].remove()
+                subfig = fig.add_subfigure(gridspec[i])
+                axes_i = subfig.subplots(2, 1, sharex=True, height_ratios=[5,2])
+                axes_nested.append(axes_i)
+
         for i, image_name in enumerate(self.spec_dict):
             mask = mask_dict[image_name] if image_name in mask_dict else np.ones_like(self.spec_dict[image_name].lambda_array)
-            sim_specs[image_name], _ = self.spec_dict[image_name].simulateSpectrum(kwargs_values=kwargs_values_mult[image_name], mask_array=mask,
-                                                                                   tol_positive=tol_positive, plot_ax = None if not(plot) else axes[i])
+            tol_pos = tol_positive_dict[image_name] if image_name in tol_positive_dict else tol_positive
+            if print_res_stats:
+                print('For image ' + image_name + ':')
+            sim_specs[image_name], _ = self.spec_dict[image_name].simulateSpectrum(kwargs_values=kwargs_values_mult[image_name], 
+                                                                                   mask_array=mask, tol_positive=tol_pos, 
+                                                                                   plot_axes = None if not(plot) else axes_nested[i],
+                                                                                   norm_residuals=norm_residuals, print_res_stats=print_res_stats)
             if plot:
-                axes[i].set_title('Image ' + image_name)
+                axes_nested[i][0].get_figure().suptitle('Image ' + image_name)
+        
         return sim_specs
 
     def check_bounds(self, kwargs_nonlinear_mult=None, verbose=False):
@@ -143,13 +162,14 @@ class MultiSpectrum():
                 return False
         return True        
 
-    def log_likelihood_from_kwargs(self, kwargs_nonlinear_mult=None, mask_dict={}, tol_positive=-1e-3, check_bounds=True, verbose=False):
+    def log_likelihood_from_kwargs(self, kwargs_nonlinear_mult=None, mask_dict={}, tol_positive=-1e-3, tol_positive_dict={}, check_bounds=True, verbose=False):
         '''Uses the input spectra given during the initialization (flux with uncertainties for each wavelength) to compute the log-likelihood (joint across the multiple images) for a given set of non-linear parameters (the linear parameters are automatically optimized, using a MLE estimate).
         
         Inputs:
         *kwargs_nonlinear_mult:  dictionary of the form {image1: kwargs_nonlin1, image2: kwargs_nonlin2,...} where kwargs_nonlin contains numerical values for all the non-linear parameters of the corresponding image. If =None, the values stored in the ParamHandler are used.
         *mask_dict: dictionary of the form {image1: mask1, image2: mask2,...} where mask is boolean array indicating which wavelengths should be included for the corresponding image.
-        *tol_positive: consider that fluxes above this value are still positive.
+        *tol_positive: consider that fluxes above this value are still positive. Use this values for all the images unless specified in tol_positive_dict.
+        *tol_positive_dict: dictionary of the form {image1: tol1, image2: tol2,...} where tol is a value above which fluxes are still considered positive (numerical tolerance) for the corresponding image.
         *check_bounds: if True, will check if all the non-linear parameters are within the bounds of their prior, and set the log-likelihood to -inf if one of them is outside the bounds.
         *verbose: if True, will print which parameter is outside the bounds and for which image, if any.
         
@@ -168,8 +188,9 @@ class MultiSpectrum():
         kwargs_values = {}
         for image_name in self.spec_dict:
             mask = mask_dict[image_name] if image_name in mask_dict else np.ones_like(self.spec_dict[image_name].lambda_array)
+            tol_pos = tol_positive_dict[image_name] if image_name in tol_positive_dict else tol_positive
             log_lik_image, kwargs_values_image = self.spec_dict[image_name].log_likelihood(kwargs_nonlinear=kwargs_nonlinear_mult[image_name], 
-                                                                                           tol_positive=tol_positive, mask_array=mask, check_bounds=False)
+                                                                                           tol_positive=tol_pos, mask_array=mask, check_bounds=False)
             log_lik += log_lik_image
             kwargs_values[image_name] = kwargs_values_image
 
