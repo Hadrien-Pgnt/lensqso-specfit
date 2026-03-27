@@ -200,9 +200,9 @@ class VoigtLine(SpectrumComponent):
 def SingleLine(name, type, degree=0, broad=True, lambda_rest=None):
     '''Choose the class GaussHermiteLine() or VoigtLine() to represent a singlet in the dictionary of known QSO lines. 
     Broad line by default.
-    Can be a generic line at *lambda_rest* if not in the dictionary of known QSO lines (in which case name needs to start with 'Line_at_').
+    Can be a generic line at *lambda_rest* if not in the dictionary of known QSO lines (in which case name needs to start with 'LineAt').
     '''
-    if not(name.startswith('Line_at_')):
+    if not(name.startswith('LineAt')):
         lambda_rest = QSO_single_lines[name]
     
     if type=='GaussHermite':

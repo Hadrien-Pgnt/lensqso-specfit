@@ -18,7 +18,7 @@ QSO_narrow_doublets = {'NeV': [(3346.79, 3426.85), 2.73], # Cleri et al. (2023),
                        'OI': [(6302.05, 6365.54), 1/3], # # Storey & Zeippen (2000) / Sharpee & Slanger (2006) / Izotov & Thuan (2007), line-intensity ratio
                        'NII': [(6549.86, 6585.27), 1/2.96], #Galavis et al. (1997) / Dojčinović et al. (2023)
                        'SII': [(6718.29, 6732.68), 1/1.2], #dependence on  electron density & temperature in the NLR, see Xu, Komossa & Zhou (2008) or Osterbrock (1989) p. 112 -> should be left as a free parameter ?
-                       'SIII': [(9071.1, 9533.2), 2.5], # 2.59 transition probability ratio from NIST (or Podobedova et al. 2009)
+                       'SIII': [(9071.1, 9533.2), 2.59], # transition probability ratio from NIST (or Podobedova et al. 2009)
                        }
 
 ### Rest frame wavelengths (in vacuum) of QSO emission lines (mostly broad lines), in Å
@@ -200,9 +200,9 @@ class VoigtLine(SpectrumComponent):
 def SingleLine(name, type, degree=0, broad=True, lambda_rest=None):
     '''Choose the class GaussHermiteLine() or VoigtLine() to represent a singlet in the dictionary of known QSO lines. 
     Broad line by default.
-    Can be a generic line at *lambda_rest* if not in the dictionary of known QSO lines (in which case name needs to start with 'Line_at_').
+    Can be a generic line at *lambda_rest* if not in the dictionary of known QSO lines (in which case name needs to start with 'LineAt').
     '''
-    if not(name.startswith('Line_at_')):
+    if not(name.startswith('LineAt')):
         lambda_rest = QSO_single_lines[name]
     
     if type=='GaussHermite':

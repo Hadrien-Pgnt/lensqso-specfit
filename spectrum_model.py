@@ -65,7 +65,7 @@ class QuasarSpectrum():
                 name = line[0]
                 lambda_rest = None
             else:
-                name = 'Line_at_'+line[0]
+                name = 'LineAt'+str(line[0])
                 lambda_rest = line[0]             
             self.feature_dict[name+'_'+ line[3]] = spec_feat.SingleLine(name=name, type=line[1], degree=line[2], 
                                                                            broad=(line[3]=='broad'), lambda_rest=lambda_rest)
