@@ -3,6 +3,7 @@ __author__ = "hpaugnat"
 import os, copy
 import numpy as np
 from numpy.polynomial.hermite import hermval
+from scipy.special import eval_hermite, factorial, factorial2
 from scipy import interpolate as interp
 from scipy.special import voigt_profile
 import pandas as pd
@@ -15,10 +16,11 @@ c = 3e5 #speed of light in km/s
 QSO_narrow_doublets = {'NeV': [(3346.79, 3426.85), 2.73], # Cleri et al. (2023), line-intensity ratio
                        'NeIII': [(3869.86, 3968.59), 1/3.32], # Iwamuro et al. (2003), line-intensity ratio
                        'OIII': [(4960.30, 5008.24), 2.98], # Storey & Zeippen (2000), line-intensity ratio
-                       'OI': [(6302.05, 6365.54), 1/3], # # Storey & Zeippen (2000) / Sharpee & Slanger (2006) / Izotov & Thuan (2007), line-intensity ratio
-                       'NII': [(6549.86, 6585.27), 1/2.96], #Galavis et al. (1997) / Dojčinović et al. (2023)
-                       'SII': [(6718.29, 6732.68), 1/1.2], #dependence on  electron density & temperature in the NLR, see Xu, Komossa & Zhou (2008) or Osterbrock (1989) p. 112 -> should be left as a free parameter ?
-                       'SIII': [(9071.1, 9533.2), 2.59], # transition probability ratio from NIST (or Podobedova et al. 2009)
+                       'OI': [(6302.05, 6365.54), 1/3], # # Storey & Zeippen (2000) / Sharpee & Slanger (2006) / Izotov & Thuan (2007) / Revalski et al. (2024), line-intensity ratio
+                       'NII': [(6549.86, 6585.27), 1/2.96], #Galavis et al. (1997) / Dojčinović et al. (2023) / Revalski et al. (2024)
+                       'SII': [(6718.29, 6732.68), 1/1.2], 
+                       # (0.42–1.47, Revalski et al. 2024) - dependence on  electron density & temperature in the NLR, e.g. see Xu, Komossa & Zhou (2008) or Osterbrock (1989) p. 112 -> should be left as a free parameter
+                       'SIII': [(9071.1, 9533.2), 2.48], # Revalski et al. (2024), transition probability ratio (2.59 in Podobedova et al. 2009)
                        }
 
 ### Rest frame wavelengths (in vacuum) of QSO emission lines (mostly broad lines), in Å
@@ -40,10 +42,11 @@ class SpectrumComponent():
     nonlinear_params = []
 
     def __init__(self):
-        #define default prior for non-linear parameters
+        ### Need to define default prior for non-linear parameters
         self.priors = {} #dictionary of the form {param: [initial value, initial dispersion of samples, lower bound, higher bound]}
 
-    def set_priors(self, priors): #update prior with a dictionary
+    def set_priors(self, priors):
+        '''Update prior with a dictionary'''
         for param in priors:
             if param in self.nonlinear_params:
                 self.priors[param] = priors[param]
@@ -52,19 +55,21 @@ class SpectrumComponent():
                       self.__class__.__name__ +', so the prior could not be updated.' )
 
     def make_flux(lamRest):
+        '''Return flux values for that component at all the wavelengths in lamRest.'''
         return np.zeros_like(lamRest)
 
     def make_transposed_response_matrix(self, lamRest):
         '''Returns the transposed linear response matrix, i.e. M^T, where the matrix M of size (N_lam x N_lin) is such that (M*X)^T is the simulated flux of this component, where X^T is the vector with linear parameters (of length N_lin) and N_lam is the number of data points.
         Result should be in the form of a list of length N_lin, with each entry an array of size N_lam.'''
         return []
-    
-        
+
+
 class PolynomialContinuum(SpectrumComponent):
     ''' Fixed parameters:
             * lambda_c: center of wavelength range, used as reference wavelength
             * lambda_scale: half-width of wavelength range, used to scale polynomial
             * degree: order of polynomial (total number of coefficients = 1+degree). For a simple linear law, use degree=1.
+        
         Fitted parameters (linear):
             * coeffs: array of len *degree* with values of polynomial coefficients (from highest to lowest order, e.g. the leading order is at index 0).'''
 
@@ -87,6 +92,7 @@ class PolynomialContinuum(SpectrumComponent):
         for i in range(self.degree+1):
             resp_M_t.append(vandermonde[:,self.degree-i])
         return resp_M_t 
+
 
 class PowerLawContinuum(SpectrumComponent):
     ''' Fixed parameters:
@@ -112,9 +118,11 @@ class PowerLawContinuum(SpectrumComponent):
 class GaussHermiteLine(SpectrumComponent):
     '''Represents an individual emission line, with Gauss-Hermite functions to represent beyond-Gaussian line profiles.
     
-        Fixed parameters:
+        Fixed properties:
             * lambda_rest: rest-frame central wavelength of the emission line  
             * degree: leading order of polynomial in Hermite series (Hermite-Gaussian functions with orders in [0, degree] will be included). For a simple Gaussian line profile, use degree=0.
+            * broad: if True, will initialize the parameters and priors like a broad line (and otherwise like a narrow line).
+            * fix_c1c2_to_zero: if True, the coefficient of order 1 and 2 will be fixed to 0 and not considered in the array of free parameters (since usually only orders 0,3, and 4 are considered).
             
         Fitted parameters (linear):
             * coeffsHermite: coefficients of the Hermite series, ordered from the lowest to the highest order (eg. the leading order is at index -1). The Gauss-Hermite functions are normalized such that the integrated flux in the line is coeffsHermite[0].
@@ -126,10 +134,14 @@ class GaussHermiteLine(SpectrumComponent):
     linear_params = ['coeffsHermite']
     nonlinear_params = ['dlam', 'width']
     
-    def __init__(self, lambda_rest, degree, broad=True):
+    def __init__(self, lambda_rest, broad=True, degree=0, fix_c1c2_to_zero=True):
         self.lambda_rest = lambda_rest
         self.degree = degree
+        self.fix_c1c2_to_zero = fix_c1c2_to_zero
         self.priors = {'dlam': [0, 1, -40, 40]} 
+        self.normcoeffs = np.array([1/np.sqrt(2**i *factorial(i)*np.sqrt(np.pi)) for i in range(degree+1)]) 
+            #normalization coefficients to have the Hermite-Gaussian functions form an orthonormal basis
+        
         if broad: #initialize like a broad line (1000 km/s <~ Doppler FHWM <~ 10000 km/s)
             self.priors['width'] = np.array([3000, 1000, 1000, 10000]) * lambda_rest/c /(2*np.sqrt(2*np.log(2))) 
         else:
@@ -137,12 +149,57 @@ class GaussHermiteLine(SpectrumComponent):
             self.priors['width'] = np.array([400, 100, 100, 1000]) * lambda_rest/c /(2*np.sqrt(2*np.log(2))) 
 
     def make_flux(self, lamRest, dlam, width, coeffsHermite):
+        
         lambda_c = self.lambda_rest + dlam
-        lamNorm = (lamRest-lambda_c)/(np.sqrt(2)*width) #wavelength array normalized by Gaussian profile
-        #Use the physicist's Hermite polynomials, and normalize the Hermite-Gaussian functions in order to have the integral = coeffsHermite[0] for order 0  - such that it is the integrated flux in the line (the integral is =0 for higher orders)
-        return 1 / (np.sqrt(2*np.pi)*width) * hermval(lamNorm, coeffsHermite) * np.exp(-lamNorm**2)
+        lamNorm = (lamRest-lambda_c)/ width #normalized wavelength array
+        
+        #Use the physicist's Hermite polynomials, and normalize the Hermite-Gaussian functions in order to have them form an orthonormal basis, i.e., integral(psi_n*psi_m) = delta(m,n)
+        #then normalize the series such that the first term reduces to a normalized Gaussian 
+        
+        if not(self.fix_c1c2_to_zero):  #c1, c2 are free parameters so are already in coeffsHermite
+            return 1/ (np.sqrt(2*np.sqrt(np.pi))*width) * hermval(lamNorm, np.array(coeffsHermite)*self.normcoeffs) * np.exp(-lamNorm**2/2)
+        else: #fix c1=c2=0 -> coeffsHermite only includes c0, c3, ...
+            coeffsHermite_extended = np.hstack([coeffsHermite[0], [0,0], coeffsHermite[1:]]) 
+            return 1/ (np.sqrt(2*np.sqrt(np.pi))*width) * hermval(lamNorm, coeffsHermite_extended*self.normcoeffs) * np.exp(-lamNorm**2/2)
 
     def make_transposed_response_matrix(self, lamRest, dlam, width):
+        resp_M_t = []
+        lambda_c = self.lambda_rest + dlam
+        lamNorm = (lamRest-lambda_c)/width #normalized wavelength array
+        monomial = np.zeros(self.degree+1)
+        for i in range(self.degree+1):      
+            monomial *=0
+            monomial[i] = 1/np.sqrt(2**i *factorial(i)*np.sqrt(np.pi)) #normalize Hermite-Gaussian functions as an orthonormal basis set
+            if not(self.fix_c1c2_to_zero) or not(1<=i<=2):
+                resp_M_t.append( 1/ (np.sqrt(2*np.sqrt(np.pi))*width) * hermval(lamNorm, monomial) * np.exp(-lamNorm**2/2))
+        return resp_M_t 
+
+    def get_total_flux(self, coeffsHermite, **kwargs_values):
+        '''Returns the integrated line flux of a line represented by a Gauss-Hermite series with coefficients coeffsHermite = [c0, c1, c2,...]
+        '''
+        total_flux = coeffsHermite[0] #count order 0 separately (scipy convention is factorial2(-1)=0)
+        for i in range(1, len(coeffsHermite)):
+            if (i%2) == 0 : #only even orders matter
+                total_flux += coeffsHermite[i]*factorial2(i-1)/np.sqrt(factorial(i))
+        return total_flux
+
+
+    def make_flux_old(self, lamRest, dlam, width, coeffsHermite):
+        '''DEPRECATED. Old formulation (not the usual Gauss-Hermite functions)'''
+        
+        lambda_c = self.lambda_rest + dlam
+        lamNorm = (lamRest-lambda_c)/(np.sqrt(2)*width) #wavelength array normalized by Gaussian profile
+        
+        #Use the physicist's Hermite polynomials, and normalize the Hermite-Gaussian functions in order to have the integral = coeffsHermite[0] for order 0  - such that it is the integrated flux in the line (the integral is =0 for higher orders)
+        
+        if not(self.fix_c1c2_to_zero):  #c1, c2 are free parameters so are already in coeffsHermite
+            return 1 / (np.sqrt(2*np.pi)*width) * hermval(lamNorm, coeffsHermite) * np.exp(-lamNorm**2)
+        else: #fix c1=c2=0 -> coeffsHermite only includes c0, c3, ...
+            coeffsHermite_extended = np.hstack([coeffsHermite[0], [0,0], coeffsHermite[1:]]) 
+            return 1 / (np.sqrt(2*np.pi)*width) * hermval(lamNorm, coeffsHermite_extended) * np.exp(-lamNorm**2)
+
+    def make_transposed_response_matrix_old(self, lamRest, dlam, width):
+        '''DEPRECATED. Old formulation (not the usual Gauss-Hermite functions)'''
         resp_M_t = []
         lambda_c = self.lambda_rest + dlam
         lamNorm = (lamRest-lambda_c)/(np.sqrt(2)*width) #wavelength array normalized by Gaussian profile
@@ -150,8 +207,35 @@ class GaussHermiteLine(SpectrumComponent):
         for i in range(self.degree+1):      
             monomial *=0
             monomial[i] = 1
-            resp_M_t.append( 1/(np.sqrt(2*np.pi)*width) * hermval(lamNorm, monomial) * np.exp(-lamNorm**2))
+            if not(self.fix_c1c2_to_zero) or not(1<=i<=2):
+                resp_M_t.append( 1/(np.sqrt(2*np.pi)*width) * hermval(lamNorm, monomial) * np.exp(-lamNorm**2))
         return resp_M_t
+
+
+class GaussHermiteLineRelShape(GaussHermiteLine):
+    '''Same as GaussHermiteLine, but this time the Hermite coefficients with order >=1 (in relcoeffsHermite) are treated as non-linear parameters (expressed relative to order 0) to allow for the shape parameters to be shared between different images. Only the overall scaling *amp* (i.e., the order 0 coefficient) is treated as a linear parameter.
+    '''
+    
+    def __init__(self, lambda_rest, broad=True, degree=0, fix_c1c2_to_zero=True):
+        super().__init__(lambda_rest, broad, degree, fix_c1c2_to_zero)
+        self.linear_params = ['amp']
+        self.nonlinear_params = ['dlam', 'width', 'relcoeffsHermite']
+        self.priors['relcoeffsHermite'] = [0, 0.1, -1, 1] 
+        
+    def make_flux(self, lamRest, amp, dlam, width, relcoeffsHermite):
+        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1) 
+        return amp*(super().make_flux(lamRest, dlam, width, Hermcoeffs)) #then multiply everything by c_0=amp
+
+    def make_transposed_response_matrix(self, lamRest, dlam, width, relcoeffsHermite):
+        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1)  
+        return [super().make_flux(lamRest, dlam, width, Hermcoeffs)]
+
+    def get_total_flux(self, amp, relcoeffsHermite, **kwargs_values):
+        '''Returns the integrated line flux of a line represented by a Gauss-Hermite series with coefficients [c0, c1, c2,...]
+        where amp=c0 and relcoeffsHermite = [c1/c0, c2/c0, ...]
+        '''        
+        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1) 
+        return amp*(super().get_total_flux(Hermcoeffs)) #then multiply everything by c_0=amp
 
 class VoigtLine(SpectrumComponent):
     '''Represents an individual emission line with a Voigt profile. 
@@ -191,22 +275,24 @@ class VoigtLine(SpectrumComponent):
     
     def make_transposed_response_matrix(self, lamRest, dlam, width, gamma):
         return [self.make_flux(lamRest, dlam, width, gamma, amp=1)]
+    
+    def get_total_flux(self, amp, **kwargs_values):
+        return amp ##the Voigt profile is normalized such that amp is the total flux in the line
                              
-#class SingleLine(Line):
-#    '''Wraps the class Line() to represent a singlet in the dictionary of known QSO lines. Broad line by default.'''   
-#    def __init__(self, name, degree, broad=True):
-#        super().__init__(QSO_single_lines[name], degree, broad=broad)
 
-def SingleLine(name, type, degree=0, broad=True, lambda_rest=None):
-    '''Choose the class GaussHermiteLine() or VoigtLine() to represent a singlet in the dictionary of known QSO lines. 
-    Broad line by default.
+def SingleLine(name, type, broad=True, lambda_rest=None, kwargs_init={}):
+    '''Choose the class GaussHermiteLine(), GaussHermiteLineRelShape(), or VoigtLine() to represent a singlet in the dictionary of known QSO lines. 
+    Broad line by default. 
+    *kwargs_init* can be used to specify {'degree':int, 'fix_c1c2_to_zero':bool} for the GaussHermiteLine() instances
     Can be a generic line at *lambda_rest* if not in the dictionary of known QSO lines (in which case name needs to start with 'LineAt').
     '''
     if not(name.startswith('LineAt')):
         lambda_rest = QSO_single_lines[name]
     
     if type=='GaussHermite':
-        return GaussHermiteLine(lambda_rest, degree=degree, broad=broad)
+        return GaussHermiteLine(lambda_rest, broad=broad, **kwargs_init)
+    elif type=='GaussHermiteRelShape':
+        return GaussHermiteLineRelShape(lambda_rest, broad=broad, **kwargs_init)
     elif type=='Voigt':
         return VoigtLine(lambda_rest, broad=broad)
     else:
@@ -216,17 +302,24 @@ def SingleLine(name, type, degree=0, broad=True, lambda_rest=None):
 class NarrowDoublet(SpectrumComponent):
     '''Uses two instances of either GaussHermiteLine() or VoigtLine() to represent a narrow-line doublet with the same profile for the two lines, scaled by a predicted ratio.
     Uses the wavelengths and theoretical line ratios listed in the dictionary *QSO_narrow_doublets*
-    For type='GaussHermite', with this definition, the coefficient of the Hermite series are all treated as linear parameters, so they cannot be shared between different images.
+    For type='GaussHermite', the coefficient of the Hermite series are all treated as linear parameters, so they cannot be shared between different images. For type='GaussHermiteRelShape', the Hermite coefficients with order >=1 (in relcoeffsHermite) are treated as non-linear parameters (expressed relative to order 0), so they can be shared.
+    *kwargs_init* can be used to specify {'degree':int, 'fix_c1c2_to_zero':bool} for the GaussHermiteLine() instances
     '''
     
-    def __init__(self, name, type, degree=0):
+    def __init__(self, name, type, kwargs_init={}):
         wavelengths, lineratio = QSO_narrow_doublets[name]
 
         if type=='GaussHermite':
-            self.line1 = GaussHermiteLine(wavelengths[0], degree, broad=False) #initialize as narrow-line
-            self.line2 = GaussHermiteLine(wavelengths[1], degree, broad=False) #initialize as narrow-line
+            self.line1 = GaussHermiteLine(wavelengths[0], broad=False, **kwargs_init) #initialize as narrow-line
+            self.line2 = GaussHermiteLine(wavelengths[1], broad=False, **kwargs_init) #initialize as narrow-line
             self.linear_params = ['coeffsHermite']
             self.nonlinear_params = ['dlam', 'width']
+
+        elif type=='GaussHermiteRelShape':
+            self.line1 = GaussHermiteLineRelShape(wavelengths[0], broad=False, **kwargs_init) #initialize as narrow-line
+            self.line2 = GaussHermiteLineRelShape(wavelengths[1], broad=False, **kwargs_init) #initialize as narrow-line
+            self.linear_params = ['amp']
+            self.nonlinear_params = ['dlam', 'width', 'relcoeffsHermite']
             
         elif type=='Voigt':
             self.line1 = VoigtLine(wavelengths[0], broad=False) #initialize as narrow-line
@@ -238,12 +331,13 @@ class NarrowDoublet(SpectrumComponent):
             raise TypeError("Type" + str(type) + "is not accepted by NarrowDoublet(). The input type must either be 'GaussHermite' or 'Voigt'.") 
         
         self.line_ratio = lineratio #amp(line2)/amp(line1)
-        self.degree = degree
+        self.degree = kwargs_init.get('degree', 0) #default to degree=0 (i.e. Gaussian) when not specified
+        self.fix_c1c2_to_zero = kwargs_init.get('fix_c1c2_to_zero', True) #default to True (i.e. fix c1=c2=0 for GaussHermite)
         self.priors = copy.deepcopy(self.line1.priors)
         
     def make_flux(self, lamRest, **kwargs_values): 
         #assume the same line profile for both lines in the doublet, but with an amplitude scaled by the line ratio
-        return self.line1.make_flux(lamRest, **kwargs_values) + self.line_ratio*self.line2.make_flux(lamRest, dlam, width, **kwargs_values)
+        return self.line1.make_flux(lamRest, **kwargs_values) + self.line_ratio*self.line2.make_flux(lamRest, **kwargs_values)
 
     def make_transposed_response_matrix(self, lamRest, **kwargs_values):
         #assume the same line profile for both lines in the doublet, but with an amplitude scaled by the line ratio
@@ -260,24 +354,31 @@ class NarrowDoublet(SpectrumComponent):
         self.line1.set_priors(priors)
         self.line2.set_priors(priors)
 
+    def get_total_flux(self,  **kwargs_values):
+        return (1+self.line_ratio)*self.line1.get_total_flux(**kwargs_values)
+
 class NarrowDoubletGaussHermiteRelShape(NarrowDoublet):
-    '''Same as NarrowDoublet(type='GaussHermite'), but this time the Hermite coefficients with order >=1 are treated as non-linear parameters (expressed relative to order 0) to allow for the shape parameters to be shared between different images. Only the overall scaling *amp* is treated as a linear coefficient.
+    '''DEPRECATED. 
+    Same as NarrowDoublet(type='GaussHermite'), but this time the Hermite coefficients with order >=1 (in relcoeffsHermite) are treated as non-linear parameters (expressed relative to order 0) to allow for the shape parameters to be shared between different images. Only the overall scaling *amp* (i.e., the order 0 coefficient) is treated as a linear parameter.
     '''
     
-    def __init__(self, name, degree):
-        super().__init__(name, 'GaussHermite', degree)
+    def __init__(self, name, kwargs_init={}):
+        super().__init__(name, 'GaussHermite', kwargs_init)
         self.linear_params = ['amp']
         self.nonlinear_params = ['dlam', 'width', 'relcoeffsHermite']
         self.priors['relcoeffsHermite'] = [0, 0.1, -1, 1] 
+        self.fix_c1c2_to_zero = self.line1.fix_c1c2_to_zero
         
     def make_flux(self, lamRest, amp, dlam, width, relcoeffsHermite):
         #assume the same line profile for both lines in the doublet, but with an amplitude scaled by the line ratio
-        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1)
+        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1) only 
+                                                        #(c1=c2=0 will be added by the calls to line1 and line2)
         return amp*(self.line1.make_flux(lamRest, dlam, width, Hermcoeffs) + self.line_ratio*self.line2.make_flux(lamRest, dlam, width, Hermcoeffs))
 
     def make_transposed_response_matrix(self, lamRest, dlam, width, relcoeffsHermite):
         #assume the same line profile for both lines in the doublet, but with an amplitude scaled by the line ratio
-        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1)
+        Hermcoeffs = np.hstack([[1], relcoeffsHermite]) #add the 0th order coefficient (=1) only 
+                                                    #(c1=c2=0 will be added by the calls to line1 and line2)
         return [self.line1.make_flux(lamRest, dlam, width, Hermcoeffs) + self.line_ratio*self.line2.make_flux(lamRest, dlam, width, Hermcoeffs)]
     
     def set_priors(self, priors): 
@@ -403,6 +504,6 @@ class FeIIMgII_NIR_TemplateLines(SpectrumComponent):
         return [np.dot(self.rel_amps, np.exp(-lamNorm**2)/(np.sqrt(2*np.pi)*sigma_lambda))] #sum all line contributions with the correct relative amplitudes
                 
 
-        
+
 
 

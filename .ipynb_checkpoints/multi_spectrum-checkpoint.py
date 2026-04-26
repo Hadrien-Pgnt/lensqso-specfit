@@ -10,22 +10,37 @@ class MultiSpectrum():
         '''Class to jointly model multiple quasar spectra with the same spectral features (continuum + emission lines, separated between singlets, narrow doublets, and template of families of lines), e.g. the spectra from the different images of a multiply imaged quasar.
         
     *kwargs_data: dictionary with entries of the form {'image_name': [rest wavelength array, flux values array, flux uncertainties array]}
-    *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
-                                            'narrow_doublets': list of pairs (name, nb), where 1+nb is the number of Gauss-Hermite polynomials used
-                                            'single_lines': list of pairs (name or wavelength, nb, nature), where 1+nb is the number of Gauss-Hermite polynomials used and nature = 'broad'/'narrow' to use a broad/narrow line prior.
-                                            'Template_lines': list of names (only 'FeII_Vis' and 'FeII+MgII_NIR' available for now)} 
+    
+    *kwargs_model: dictionary of the form {
+        'continuum': 'powerlaw' or ('polynomial', degree), 
+        'narrow_doublets': list of (name, type, kwargs_init), 
+                where type ='GaussHermite'/'Voigt' 
+                and kwargs_init={'degree':int, 'fix_c1c2_to_zero':bool} for Gauss-Hermite profiles (and ={} for Voigt).
+                                            
+        'single_lines': list of (name or wavelength, type, kwargs_init, nature), 
+                where type ='GaussHermite'/'Voigt', 
+                kwargs_init={'degree':int, 'fix_c1c2_to_zero':bool} for Gauss-Hermite profiles (and ={} for Voigt),
+                and nature = 'broad'/'narrow' to use adequate priors. prior.
+        'Template_lines': list of names (only 'FeII_Vis' and 'FeII+MgII_NIR' available for now)
+        }.
+        
     *kwargs_fixed: dictionary of the form {'ref_image':  image_name, 
                                             'fixed_params': dictionary of the form {'feature': list of (non-linear) params} }.
                     If a parameter is in fixed_params, its value will be shared across all images (and only the value for ref_image will be sampled).'''
 
         self.spec_dict = {}
-        self.narrow_doublet_relHerm = []            
+        self.lines_relHerm = []            
         
         for doublet in kwargs_model['narrow_doublets']:
             key = doublet[0]+'_narrow_doublet'
             if (key in kwargs_fixed['fixed_params']) and ('relcoeffsHermite' in kwargs_fixed['fixed_params'][key]):
-                 #if the Hermite series coefficients are not jointly fit between images, treat them as linear parameters 
-                self.narrow_doublet_relHerm.append(doublet[0])
+                 #if the Hermite series coefficients are jointly fit between images, treat the order >=1 ones as non-linear parameters 
+                self.lines_relHerm.append(doublet[0])
+        for line in kwargs_model['single_lines']:
+            key = line[0]+'_'+line[3]
+            if (key in kwargs_fixed['fixed_params']) and ('relcoeffsHermite' in kwargs_fixed['fixed_params'][key]):
+                 #if the Hermite series coefficients are jointly fit between images, treat the order >=1 ones as non-linear parameters 
+                self.lines_relHerm.append(line[0])
 
         FeII_Vis_linamps = not('FeII_Vis_template' in kwargs_fixed['fixed_params']) or np.all([not(key in kwargs_fixed['fixed_params']['FeII_Vis_template'])
                                                                                        for key in ['relG', 'relIZw1', 'relS']])
@@ -33,7 +48,7 @@ class MultiSpectrum():
     
         for image_name in kwargs_data:
             self.spec_dict[image_name] = QuasarSpectrum(data=kwargs_data[image_name], kwargs_model=kwargs_model, 
-                                                        narrow_doublet_relHerm=self.narrow_doublet_relHerm, FeII_Vis_linamps = FeII_Vis_linamps)
+                                                        lines_relHerm=self.lines_relHerm, FeII_Vis_linamps = FeII_Vis_linamps)
 
         self.param_handler = ParamHandler(self.spec_dict, **kwargs_fixed)
 
@@ -107,6 +122,40 @@ class MultiSpectrum():
                 values[i] = self.spec_dict[image_name].feature_dict[feature].priors[param_name][0]
                 sigs[i] = self.spec_dict[image_name].feature_dict[feature].priors[param_name][1]
         return values, sigs  
+
+
+    def get_fluxes_of_feature(self, kwargs_values_mult, feature):
+        '''For each image, returns the total flux of the same single line or doublet.'''
+
+        if feature.endswith('_template'):
+            raise CustomError('The total flux in template lines depends on the wavelength range !')
+        elif feature=='continuum':
+            raise CustomError('The total continuum flux depends on the wavelength range !')
+        else:
+            fluxes = {}
+            for image_name in self.spec_dict: 
+                fluxes[image_name] = self.spec_dict[image_name].get_flux_of_feature(kwargs_values_mult[image_name], feature)
+            return fluxes
+
+    def get_flux_ratios_of_feature(self, kwargs_values_mult, feature, ref_image=None):
+        '''For each image, returns the flux ratios relative to *ref_image* for a single line or a doublet.
+        If ref_image is None, return all the possible flux ratios.'''
+        
+        fluxes = self.get_fluxes_of_feature(kwargs_values_mult, feature)
+        flux_ratios = {}
+        if ref_image is not None:
+            assert (ref_image in self.spec_dict.keys())
+            for image_name in self.spec_dict: 
+                if not(image_name==ref_image):
+                    flux_ratios['f_'+image_name+'/f_'+ref_image] = fluxes[image_name]/fluxes[ref_image]
+        else:
+            for image1 in self.spec_dict: 
+                for image2 in self.spec_dict:
+                    if not(image1==image2):
+                        flux_ratios['f_'+image1+'/f_'+image2] = fluxes[image1]/fluxes[image2]
+            
+        return flux_ratios
+        
 
     def simulateSpectra(self, kwargs_values_mult, mask_dict={}, tol_positive=-1e-3, tol_positive_dict={}, 
                         plot=False, norm_residuals=False, print_res_stats=False):
@@ -214,6 +263,7 @@ transformation of arrays of free non-linear parameters (used when sampling) to k
         self.free_nonlinear_param_list = []
         self.kwargs_nonlinear_mult = {}
         self.fixed_params = fixed_params
+        self.fixedc1c2_in_GH = [] #list of features where c1=c2=0 will be fixed in the Gauss-Hermite series
         self.ref_image = ref_image
 
         ### Check if all the parameters that are asked to be fixed in kwargs_fixed are non-linear parameters in the correspoding class, print a warning if not
@@ -233,11 +283,14 @@ transformation of arrays of free non-linear parameters (used when sampling) to k
                 kwargs_nonlinear[feature] = {}
                 for param_name in spec_dict[image_name].feature_dict[feature].nonlinear_params:
                     is_fixed = (not(image_name==ref_image) and (feature in fixed_params) and (param_name in fixed_params[feature]))
-                    if param_name=='relcoeffsHermite': # coefficients of Hermite series for Gauss-Hermite function representation: array of parameters, sorted from lowest to highest order, excluding order 0 when treated as non-linear parameters (relative to order 0)
+                    if param_name=='relcoeffsHermite': # coefficients of Hermite series for Gauss-Hermite function representation: array of parameters, sorted from lowest to highest order, excluding order 0 when treated as non-linear parameters (relative to order 0), and excluding orders 1 and 2 if specified.
+                        fixc1c2 = spec_dict[image_name].feature_dict[feature].fix_c1c2_to_zero
+                        if fixc1c2:
+                            self.fixedc1c2_in_GH.append(feature) 
                         if not(is_fixed):
                             self.free_nonlinear_param_list.extend([feature+'_relcoeffsHermite'+str(i+1)+'_'+image_name 
-                                                    for i in range(spec_dict[image_name].feature_dict[feature].degree)])
-                        kwargs_nonlinear[feature][param_name] = np.zeros(spec_dict[image_name].feature_dict[feature].degree)
+                                                    for i in range(2*fixc1c2, spec_dict[image_name].feature_dict[feature].degree)])
+                        kwargs_nonlinear[feature][param_name] = np.zeros(max(0,spec_dict[image_name].feature_dict[feature].degree - 2*fixc1c2))
                     else: #single numerical value (NB: polynomial coeffs are necessarily linear so cannot be fixed)
                         if not(is_fixed):
                             self.free_nonlinear_param_list.append(feature+'_'+param_name+'_'+image_name)
@@ -255,9 +308,10 @@ transformation of arrays of free non-linear parameters (used when sampling) to k
         
         for i in range(len(self.free_nonlinear_param_list)):
             feature, param_name, image_name = self.free_nonlinear_param_list[i].rsplit('_', 2) #free parameters should not be fixed to another
-            if param_name.startswith('relcoeffsHermite'): # coefficients of Hermite series sorted from lowest to highest order, excluding order 0 (when treated as non-linear parameters)
+            if param_name.startswith('relcoeffsHermite'): # coefficients of Hermite series sorted from lowest to highest order, excluding order 0 (when treated as non-linear parameters), and excluding orders 1 and 2 if specified.
                 coeff_nb = int(param_name.removeprefix('relcoeffsHermite'))
-                self.kwargs_nonlinear_mult[image_name][feature]['relcoeffsHermite'][coeff_nb-1] = value_array[i]
+                fixc1c2 = (feature in self.fixedc1c2_in_GH)
+                self.kwargs_nonlinear_mult[image_name][feature]['relcoeffsHermite'][coeff_nb-1-2*fixc1c2] = value_array[i]
             else:
                 self.kwargs_nonlinear_mult[image_name][feature][param_name] = value_array[i]
 
@@ -281,9 +335,10 @@ transformation of arrays of free non-linear parameters (used when sampling) to k
         
         for i in range(len(self.free_nonlinear_param_list)):
             feature, param_name, image_name = self.free_nonlinear_param_list[i].rsplit('_', 2) #free parameters should not be fixed to another
-            if param_name.startswith('relcoeffsHermite'): #(relative) coefficients of Hermite series sorted from lowest to highest order, excluding order 0 (when treated as non-linear parameters)
+            if param_name.startswith('relcoeffsHermite'): #(relative) coefficients of Hermite series sorted from lowest to highest order, excluding order 0 (when treated as non-linear parameters), and excluding orders 1 and 2 if specified.
                 coeff_nb = int(param_name.removeprefix('relcoeffsHermite'))
-                kwargs_nonlinear_mult_new[image_name][feature]['relcoeffsHermite'][coeff_nb-1] = value_array[i]
+                fixc1c2 = (feature in self.fixedc1c2_in_GH)
+                kwargs_nonlinear_mult_new[image_name][feature]['relcoeffsHermite'][coeff_nb-1-2*fixc1c2] = value_array[i]
             else:
                 kwargs_nonlinear_mult_new[image_name][feature][param_name] = value_array[i]
 
@@ -308,9 +363,10 @@ transformation of arrays of free non-linear parameters (used when sampling) to k
         array_values = np.zeros(n_params)
         for i in range(n_params):
             feature, param_name, image_name = self.free_nonlinear_param_list[i].rsplit('_', 2)
-            if param_name.startswith('relcoeffsHermite'): #(relative) coefficients of Hermite series sorted from lowest to highest order, excluding order 0 (when treated as non-linear parameters)
+            if param_name.startswith('relcoeffsHermite'): #(relative) coefficients of Hermite series sorted from lowest to highest order, excluding order 0 (when treated as non-linear parameters), and excluding orders 1 and 2 if specified.
                 coeff_nb = int(param_name.removeprefix('relcoeffsHermite'))
-                array_values[i] = kwargs_nonlinear_mult[image_name][feature]['relcoeffsHermite'][coeff_nb-1]
+                fixc1c2 = (feature in self.fixedc1c2_in_GH)
+                array_values[i] = kwargs_nonlinear_mult[image_name][feature]['relcoeffsHermite'][coeff_nb-1-2*fixc1c2]
             else: #single numerical value (NB: polynomial coeffs are necessarily linear so cannot be fixed)
                 array_values[i] = kwargs_nonlinear_mult[image_name][feature][param_name]
 

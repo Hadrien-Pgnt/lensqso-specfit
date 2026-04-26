@@ -207,74 +207,91 @@ class MCMCSampler(Optimizer):
          ax.plot(dist_normed, label="logL", color="k", linewidth=2)
 
     
-    def narrow_doublet_flux_ratio_posterior(self, narrow_doublet_name, samples=None, n_samples=1000, n_burn_add=0):
-         '''Calculates a posterior probability distribution on the narrow-line region flux ratios, with respect to the reference image (input of the MultiSpectrum() instance) from model parameter samples.
+    def flux_ratio_posterior(self, feature, ref_image='default', samples=None, n_samples=1000, n_burn_add=0):
+         '''Calculates a posterior probability distribution on the flux ratios for a given feature, from model parameter samples.
          
          Inputs:
-         *narrow_doublet_name: label of the narrow doublet used for flux-ratio calculation.
+         *feature: label of the emission feature (single line or doublet) used for flux-ratio calculation.
+         *ref_image: return the flux ratios relative to this image (by default, the one given as input of the MultiSpectrum() instance).
+             If None, return all the possible flux ratios.
          *samples: list of parameter samples. If None, uses the MCMC chain stored in the class (requires a run_mcmc beforehand).
          *n_samples: number of random re-samples of the chain to estimate the posterior
          *n_burn_add: number of samples to ignore at the start of the chain, to avoid re-sampling parts of the chain where the MCMC had not yet converged.
          
          Outputs:
-         * narrow_doublet_fluxratios: array of flux-ratio values
+         * feature_fluxratios: array of flux-ratio values
          * list(fr_names.keys()): list of labels for the flux ratios
          '''
-         
          if samples is None:
              samples = self.samples_mcmc
-
-         ref_image = self.multi_spec.param_handler.ref_image
-
-         if not(narrow_doublet_name in [doublet[0] for doublet in self.multi_spec.spec_dict[ref_image].kwargs_model['narrow_doublets']]):
-             raise CustomError('This narrow doublet is not in the model.')
+         
+         if ref_image=='default':
+             ref_image = self.multi_spec.param_handler.ref_image
+             
+         if not(feature in self.multi_spec.spec_dict[self.multi_spec.param_handler.ref_image].feature_dict):
+             raise CustomError('This feature is not in the model.')
         
          num_samples_tot = len(samples[:, 0])
          subsample = n_burn_add + np.random.choice(a=num_samples_tot-n_burn_add, size=n_samples)
 
-         #Array that will contain the flux ratios relative to the reference image, for each sample
          fr_names = {}
          index = 0
-         for image_name in self.multi_spec.spec_dict: 
-             if not(image_name==ref_image):
-                 fr_names['f_'+image_name+'/f_'+ref_image] = index
-                 index+=1
-         narrow_doublet_fluxratios = np.zeros((n_samples, index))
+         if ref_image is not None:
+             assert (ref_image in self.multi_spec.spec_dict.keys())
+             for image_name in self.multi_spec.spec_dict: 
+                 if not(image_name==ref_image):
+                     fr_names['f_'+image_name+'/f_'+ref_image] = index
+                     index+=1
+         else:
+             for image1 in self.multi_spec.spec_dict: 
+                 for image2 in self.multi_spec.spec_dict:
+                     if not(image1==image2):
+                         fr_names['f_'+image1+'/f_'+image2] = index
+                         index+=1
+              
+         #Array that will contain the flux ratios for each sample
+         fluxratios_array = np.zeros((n_samples, index))         
                  
          # find position of relevant amplitude parameter in the list of linear params 
          # (depending on whether the Hermite coefficients are treated as linear or non-linear the integrated flux is named differently)
+         image_name = self.multi_spec.param_handler.ref_image
          try:
-             k = self.multi_spec.spec_dict[image_name].lin_param_handler.linear_param_list.index(narrow_doublet_name + '_narrow_doublet_amp')
+             k = self.multi_spec.spec_dict[image_name].lin_param_handler.linear_param_list.index(feature + '_amp')
          except ValueError:
-             k = self.multi_spec.spec_dict[image_name].lin_param_handler.linear_param_list.index(narrow_doublet_name + '_narrow_doublet_coeffsHermite0')
+             k = self.multi_spec.spec_dict[image_name].lin_param_handler.linear_param_list.index(feature + '_coeffsHermite0')
                  
          for i in range(n_samples):
-             
+            
              #sample the non-linear parameter
              array_nonlinear_free_params = samples[subsample[i]]
 
-             narrow_doublet_fluxes = {} #dictionary with the narrow-line fluxes
              kwargs_nonlinear_mult = self.multi_spec.param_handler.array2kwargs_nonlinear(array_nonlinear_free_params)
+             feature_fluxes = {}
              for image_name in self.multi_spec.spec_dict:
                  mask = self.kwargs_lik['mask_dict'][image_name] if image_name in self.kwargs_lik['mask_dict'] else np.ones_like(
                      self.multi_spec.spec_dict[image_name].lambda_array)
-                 lin_params_MLE, lin_params_cov = self.multi_spec.spec_dict[image_name].solve_linear_params(kwargs_nonlinear=kwargs_nonlinear_mult[image_name],
-                                                                                                            mask_array=mask)
+                 lin_params_MLE, lin_params_cov = self.multi_spec.spec_dict[image_name].solve_linear_params(
+                     kwargs_nonlinear=kwargs_nonlinear_mult[image_name],mask_array=mask)
+                
                  #sample from conditional distribution (linear params knowing non-linear params)
                  lin_params_sample = np.random.multivariate_normal(lin_params_MLE, lin_params_cov, size=1)[0]
 
-                 narrow_doublet_fluxes[image_name] = lin_params_sample[k]
+                 feature_fluxes[image_name] = lin_params_sample[k]
                 
              #calculate the flux-ratios
-             for j, image_name in enumerate(self.multi_spec.spec_dict):
-                 if not(image_name==ref_image):
-                     index = fr_names['f_'+image_name+'/f_'+ref_image]
-                     narrow_doublet_fluxratios[i][index] = narrow_doublet_fluxes[image_name]/narrow_doublet_fluxes[ref_image]
-
+             if ref_image is not None:
+                 for image_name in self.multi_spec.spec_dict: 
+                     if not(image_name==ref_image):
+                         index = fr_names['f_'+image_name+'/f_'+ref_image]
+                         fluxratios_array[i][index] = feature_fluxes[image_name]/feature_fluxes[ref_image]
+             else:
+                 for image1 in self.multi_spec.spec_dict: 
+                     for image2 in self.multi_spec.spec_dict:
+                         if not(image1==image2):
+                             index = fr_names['f_'+image1+'/f_'+image2]
+                             fluxratios_array[i][index] = feature_fluxes[image1]/feature_fluxes[image2]
          
-         return narrow_doublet_fluxratios, list(fr_names.keys())   
-                                                                                                       
-
+         return fluxratios_array, list(fr_names.keys())   
 
 class FittingSequence():
 
@@ -385,8 +402,6 @@ class FittingSequence():
 ######### recode PSO to avoid lenstronomy dependency ? ##########
 
 ######### save chains as .npy files & inputs/results as .json files ?? ##########
-
-######### Implement Voigt profile ?  ##########
 
 ######### Priors for linear parameters ? ##########
 

@@ -17,15 +17,27 @@ class CustomError(Exception):
 
 class QuasarSpectrum():
     '''Class to model a single quasar spectrum with multiple spectral features (continuum + emission lines, separated between singlets, narrow doublets, and template of families of lines).
+    
     *data: list with [rest wavelength array, flux values array, flux uncertainties array] (all need to have the same shape)
-    *kwargs_model: dictionary of the form {'continuum': 'powerlaw' or ('polynomial', degree), 
-                                            'narrow_doublets': list of (name, type, nb), where type ='GaussHermite'/'Voigt' and 1+nb is the number of Gauss-Hermite polynomials used (can be anything if type=='Voigt').
-                                            'single_lines': list of (name or wavelength, type, nb, nature), where type ='GaussHermite'/'Voigt', 1+nb is the number of Gauss-Hermite polynomials used (does not matter if type=='Voigt') and nature = 'broad'/'narrow' to use adequate priors. prior.
-                                            'Template_lines': list of names (only 'FeII_Vis' and 'FeII+MgII_NIR' available for now)}.
-    *narrow_doublet_linHerm: list of narrow_doublet names (of type 'GaussHermite') for which the Hermite series coefficients are treated as linear parameters.
+    
+    *kwargs_model: dictionary of the form {
+        'continuum': 'powerlaw' or ('polynomial', degree), 
+        'narrow_doublets': list of (name, type, kwargs_init), 
+                where type ='GaussHermite'/'Voigt' 
+                and kwargs_init={'degree':int, 'fix_c1c2_to_zero':bool} for Gauss-Hermite profiles (and ={} for Voigt).
+                                            
+        'single_lines': list of (name or wavelength, type, kwargs_init, nature), 
+                where type ='GaussHermite'/'Voigt', 
+                kwargs_init={'degree':int, 'fix_c1c2_to_zero':bool} for Gauss-Hermite profiles (and ={} for Voigt),
+                and nature = 'broad'/'narrow' to use adequate priors. prior.
+        'Template_lines': list of names (only 'FeII_Vis' and 'FeII+MgII_NIR' available for now)
+        }.
+        
+    *lines_relHerm: list of features (can be single lines or doublets, of type 'GaussHermite') for which the Hermite series coefficients c_n of order n >=1 are treated as non-linear parameters, relative to c_0.
+    
     *FeII_Vis_linamps: bool, True if all the FeII_Vis line family amplitudes are treated as linear parameters (only F will be otherwise)'''
 
-    def __init__(self, data, kwargs_model, narrow_doublet_relHerm=[], FeII_Vis_linamps=True):
+    def __init__(self, data, kwargs_model, lines_relHerm=[], FeII_Vis_linamps=True):
         self.lambda_array = data[0]
         self.flux_array = data[1]
         self.flux_err_array = data[2]
@@ -51,11 +63,8 @@ class QuasarSpectrum():
 
         ## Define narrow-line doublets
         for doublet in kwargs_model['narrow_doublets']:
-            if doublet[0] in narrow_doublet_relHerm: #only c_0 (the coefficient in front of H_0) is treated as a linear parameter, the other coefficients are expressed relative to c_0 and are sampled as non-linear parameters
-                self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoubletGaussHermiteRelShape(name=doublet[0], degree=doublet[2])
-                
-            else: #Hermite coefficients will be treated as linear parameters if doublet is GaussianHermite
-                self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoublet(name=doublet[0], type=doublet[1], degree=doublet[2])
+            type_doublet = doublet[1]+'RelShape' if doublet[0] in lines_relHerm else doublet[1]   #add suffix to type if the non-zero coeffs of Gauss-Hermite series are to be treated as relative, non-linear parameters
+            self.feature_dict[doublet[0]+'_narrow_doublet'] = spec_feat.NarrowDoublet(name=doublet[0], type=type_doublet, kwargs_init=doublet[2])
                 
                 
         ## Define single lines 
@@ -66,8 +75,9 @@ class QuasarSpectrum():
                 lambda_rest = None
             else:
                 name = 'LineAt'+str(line[0])
-                lambda_rest = line[0]             
-            self.feature_dict[name+'_'+ line[3]] = spec_feat.SingleLine(name=name, type=line[1], degree=line[2], 
+                lambda_rest = line[0]  
+            type_line = line[1]+'RelShape' if line[0] in lines_relHerm else line[1]   #add suffix to type if the non-zero coeffs of Gauss-Hermite series are to be treated as relative, non-linear parameters
+            self.feature_dict[name+'_'+ line[3]] = spec_feat.SingleLine(name=name, type=type_line, kwargs_init=line[2], 
                                                                            broad=(line[3]=='broad'), lambda_rest=lambda_rest)
 
         ## Define template lines 
@@ -91,6 +101,17 @@ class QuasarSpectrum():
     def set_priors(self, feature, priors):
         '''Updates the priors on the parameters describing the spectral feature *feature*, with the values contained in *priors*.'''
         self.feature_dict[feature].set_priors(priors)
+
+    def get_flux_of_feature(self, kwargs_values, feature):
+        '''Returns the total flux for a single line or a doublet.'''
+        
+        if feature.endswith('_template'):
+            raise CustomError('The total flux in template lines depends on the wavelength range !')
+        elif feature=='continuum':
+            raise CustomError('The total continuum flux depends on the wavelength range !')
+        else:
+            return self.feature_dict[feature].get_total_flux(**kwargs_values[feature])
+
         
     def simulateSpectrum(self, kwargs_values, mask_array=None, tol_positive=-1e-3, plot_axes=None, norm_residuals=False, print_res_stats=False):
         '''Given a set of parameter values, generates the model spectrum by calculating the flux for each wavelength in self.lambda_array.
@@ -251,6 +272,7 @@ class QuasarSpectrum():
         log_lik = np.sum(-(sim_spec - self.flux_array)**2/self.flux_err_array**2 * mask_array) + ( 
             len(X_opt)/2 *np.log(2*np.pi) + 1/2 * np.log(np.linalg.det(Sigma_X)) )
         return log_lik, kwargs_values
+
                 
         
 class LinearParamHandler():
@@ -264,10 +286,17 @@ class LinearParamHandler():
         
         for feature in feature_dict:
             for param_name in feature_dict[feature].linear_params:
-                if param_name=='coeffsHermite': #coefficients of Hermite series for Gauss-Hermite function representation: array of parameters, sorted from lowest to highest order, including order 0 when treated as linear parameters
-                    self.linear_param_list.extend([feature+'_'+param_name+str(i) for i in range(1+feature_dict[feature].degree)])
-                    self.multiplicity_dict[feature] = {'coeffsHermite':1+feature_dict[feature].degree}
-                    nb_lin_params += 1+feature_dict[feature].degree
+                if param_name=='coeffsHermite': #coefficients of Hermite series for Gauss-Hermite function representation: array of parameters, sorted from lowest to highest order, including order 0 when treated as linear parameters, excluding orders 1 and 2 if specified.
+                    if feature_dict[feature].fix_c1c2_to_zero:
+                        self.linear_param_list.extend([feature+'_'+param_name+str(i) for i in [0,*range(3,1+feature_dict[feature].degree)]])
+                        #c0 is the only free linear param for degree <=2
+                        nb_lin_params += max(1, feature_dict[feature].degree-1) 
+                        self.multiplicity_dict[feature] = {'coeffsHermite': max(1, feature_dict[feature].degree-1), 'fix_c1c2':True }
+                    else:
+                        self.linear_param_list.extend([feature+'_'+param_name+str(i) for i in range(1+feature_dict[feature].degree)])
+                        nb_lin_params += 1+feature_dict[feature].degree
+                        self.multiplicity_dict[feature] = {'coeffsHermite':1+feature_dict[feature].degree, 'fix_c1c2':False} 
+                    
                 elif param_name=='coeffs':  #polynomial coefficients: array of parameters, sorted from highest to lowest order, including order 0
                     N = feature_dict[feature].degree
                     self.linear_param_list.extend([feature+'_'+param_name+str(N-i) for i in range(N+1)])
@@ -285,11 +314,13 @@ class LinearParamHandler():
         kwargs_values = copy.deepcopy(kwargs_nonlinear)
         for i in range(len(self.linear_param_list)):
             feature, param_name = self.linear_param_list[i].rsplit('_', 1)
-            if param_name.startswith('coeffsHermite'): #coefficients of Hermite series are sorted from lowest to highest order, including order 0 when treated as linear parameters
+            if param_name.startswith('coeffsHermite'): #coefficients of Hermite series are sorted from lowest to highest order, including order 0 when treated as linear parameters, excluding orders 1 and 2 if specified.
                 coeff_nb = int(param_name.removeprefix('coeffsHermite'))
                 if not('coeffsHermite' in kwargs_values[feature]): #create an array to store the coeffs if it does not exist already
                     kwargs_values[feature]['coeffsHermite'] = np.zeros(self.multiplicity_dict[feature]['coeffsHermite'])
-                kwargs_values[feature]['coeffsHermite'][coeff_nb] = lin_values_array[i]
+
+                coeff_index = coeff_nb - 2*(coeff_nb>0)*self.multiplicity_dict[feature]['fix_c1c2'] #shift by 2 if c1=c2=0
+                kwargs_values[feature]['coeffsHermite'][coeff_index] = lin_values_array[i]
             
             elif param_name.startswith('coeffs'): #polynomial coefficients are sorted from highest to lowest order, including order 0
                 coeff_nb = int(param_name.removeprefix('coeffs'))
