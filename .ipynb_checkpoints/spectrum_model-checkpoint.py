@@ -102,13 +102,15 @@ class QuasarSpectrum():
         '''Updates the priors on the parameters describing the spectral feature *feature*, with the values contained in *priors*.'''
         self.feature_dict[feature].set_priors(priors)
 
-    def get_flux_of_feature(self, kwargs_values, feature):
-        '''Returns the total flux for a single line or a doublet.'''
+    def get_flux_of_feature(self, kwargs_values, feature, continuum_range=None):
+        '''Returns the total flux for an individual feature (except templates).'''
         
         if feature.endswith('_template'):
             raise CustomError('The total flux in template lines depends on the wavelength range !')
         elif feature=='continuum':
-            raise CustomError('The total continuum flux depends on the wavelength range !')
+            if continuum_range is None:
+                continuum_range = (self.lambda_array[0], self.lambda_array[-1])
+            return self.feature_dict[feature].get_total_flux(**kwargs_values[feature], lambda_min=continuum_range[0], lambda_max=continuum_range[1])
         else:
             return self.feature_dict[feature].get_total_flux(**kwargs_values[feature])
 

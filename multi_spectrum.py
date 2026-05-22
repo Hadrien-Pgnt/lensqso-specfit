@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import copy
 
-from spectrum_model import QuasarSpectrum
+from spectrum_model import QuasarSpectrum, CustomError
 
 class MultiSpectrum():
 
@@ -124,24 +124,27 @@ class MultiSpectrum():
         return values, sigs  
 
 
-    def get_fluxes_of_feature(self, kwargs_values_mult, feature):
+    def get_fluxes_of_feature(self, kwargs_values_mult, feature, continuum_range=None):
         '''For each image, returns the total flux of the same single line or doublet.'''
 
         if feature.endswith('_template'):
             raise CustomError('The total flux in template lines depends on the wavelength range !')
-        elif feature=='continuum':
-            raise CustomError('The total continuum flux depends on the wavelength range !')
         else:
             fluxes = {}
             for image_name in self.spec_dict: 
-                fluxes[image_name] = self.spec_dict[image_name].get_flux_of_feature(kwargs_values_mult[image_name], feature)
+                if continuum_range is None: #will set the same continuum range for all images, for a direct comparison
+                    continuum_range = (self.spec_dict[image_name].lambda_array[0], self.spec_dict[image_name].lambda_array[-1]) 
+                fluxes[image_name] = self.spec_dict[image_name].get_flux_of_feature(kwargs_values_mult[image_name], feature, continuum_range)
             return fluxes
 
-    def get_flux_ratios_of_feature(self, kwargs_values_mult, feature, ref_image=None):
-        '''For each image, returns the flux ratios relative to *ref_image* for a single line or a doublet.
+    def get_flux_ratios_of_feature(self, kwargs_values_mult, feature, ref_image=None, continuum_range=None):
+        '''For each image, returns the flux ratios relative to *ref_image* for an individual feature (except templates).
         If ref_image is None, return all the possible flux ratios.'''
+
+        if feature.endswith('_template'):
+            raise CustomError('The total flux in template lines depends on the wavelength range ! If all images have the same shape parameters, you can simply take the ratio of amplitude scalings.')
         
-        fluxes = self.get_fluxes_of_feature(kwargs_values_mult, feature)
+        fluxes = self.get_fluxes_of_feature(kwargs_values_mult, feature, continuum_range)
         flux_ratios = {}
         if ref_image is not None:
             assert (ref_image in self.spec_dict.keys())

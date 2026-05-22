@@ -207,7 +207,7 @@ class MCMCSampler(Optimizer):
          ax.plot(dist_normed, label="logL", color="k", linewidth=2)
 
     
-    def flux_ratio_posterior(self, feature, ref_image='default', samples=None, n_samples=1000, n_burn_add=0):
+    def flux_ratio_posterior(self, feature, ref_image='default', samples=None, n_samples=1000, n_burn_add=0, continuum_range=None):
          '''Calculates a posterior probability distribution on the flux ratios for a given feature, from model parameter samples.
          
          Inputs:
@@ -217,10 +217,11 @@ class MCMCSampler(Optimizer):
          *samples: list of parameter samples. If None, uses the MCMC chain stored in the class (requires a run_mcmc beforehand).
          *n_samples: number of random re-samples of the chain to estimate the posterior
          *n_burn_add: number of samples to ignore at the start of the chain, to avoid re-sampling parts of the chain where the MCMC had not yet converged.
+         *continuum_range: wavelength range over which to integrate the continuum flux. If None, use the same range as the data for the first image
          
          Outputs:
-         * feature_fluxratios: array of flux-ratio values
-         * list(fr_names.keys()): list of labels for the flux ratios
+         * fluxratios_array: array of flux-ratio values for the chosen feature.
+         * list(fr_indices.keys()): list of labels for the flux ratios
          '''
          if samples is None:
              samples = self.samples_mcmc
@@ -234,64 +235,62 @@ class MCMCSampler(Optimizer):
          num_samples_tot = len(samples[:, 0])
          subsample = n_burn_add + np.random.choice(a=num_samples_tot-n_burn_add, size=n_samples)
 
-         fr_names = {}
+         fr_indices = {}
          index = 0
          if ref_image is not None:
              assert (ref_image in self.multi_spec.spec_dict.keys())
              for image_name in self.multi_spec.spec_dict: 
                  if not(image_name==ref_image):
-                     fr_names['f_'+image_name+'/f_'+ref_image] = index
+                     fr_indices['f_'+image_name+'/f_'+ref_image] = index
                      index+=1
          else:
              for image1 in self.multi_spec.spec_dict: 
                  for image2 in self.multi_spec.spec_dict:
                      if not(image1==image2):
-                         fr_names['f_'+image1+'/f_'+image2] = index
+                         fr_indices['f_'+image1+'/f_'+image2] = index
                          index+=1
               
          #Array that will contain the flux ratios for each sample
          fluxratios_array = np.zeros((n_samples, index))         
                  
-         # find position of relevant amplitude parameter in the list of linear params 
-         # (depending on whether the Hermite coefficients are treated as linear or non-linear the integrated flux is named differently)
-         image_name = self.multi_spec.param_handler.ref_image
-         try:
-             k = self.multi_spec.spec_dict[image_name].lin_param_handler.linear_param_list.index(feature + '_amp')
-         except ValueError:
-             k = self.multi_spec.spec_dict[image_name].lin_param_handler.linear_param_list.index(feature + '_coeffsHermite0')
-                 
          for i in range(n_samples):
-            
-             #sample the non-linear parameter
-             array_nonlinear_free_params = samples[subsample[i]]
 
-             kwargs_nonlinear_mult = self.multi_spec.param_handler.array2kwargs_nonlinear(array_nonlinear_free_params)
-             feature_fluxes = {}
+             kwargs_values_mult_sample = {}
+             feature_fluxes_sample = {}
+            
+             #sample the non-linear parameters from the MCMC chain
+             array_nonlinear_free_params_sample = samples[subsample[i]]
+             
+             # convert from array to non-linear kwargs
+             kwargs_nonlinear_mult_sample = self.multi_spec.param_handler.array2kwargs_nonlinear(array_nonlinear_free_params_sample)
+             
              for image_name in self.multi_spec.spec_dict:
+                 #get likelihood mask
                  mask = self.kwargs_lik['mask_dict'][image_name] if image_name in self.kwargs_lik['mask_dict'] else np.ones_like(
-                     self.multi_spec.spec_dict[image_name].lambda_array)
+                     self.multi_spec.spec_dict[image_name].lambda_array) 
+                 
+                 #solve for linear parameters (get MLE + covariance estimate)
                  lin_params_MLE, lin_params_cov = self.multi_spec.spec_dict[image_name].solve_linear_params(
-                     kwargs_nonlinear=kwargs_nonlinear_mult[image_name],mask_array=mask)
+                     kwargs_nonlinear=kwargs_nonlinear_mult_sample[image_name],mask_array=mask)
                 
                  #sample from conditional distribution (linear params knowing non-linear params)
                  lin_params_sample = np.random.multivariate_normal(lin_params_MLE, lin_params_cov, size=1)[0]
 
-                 feature_fluxes[image_name] = lin_params_sample[k]
-                
-             #calculate the flux-ratios
-             if ref_image is not None:
-                 for image_name in self.multi_spec.spec_dict: 
-                     if not(image_name==ref_image):
-                         index = fr_names['f_'+image_name+'/f_'+ref_image]
-                         fluxratios_array[i][index] = feature_fluxes[image_name]/feature_fluxes[ref_image]
-             else:
-                 for image1 in self.multi_spec.spec_dict: 
-                     for image2 in self.multi_spec.spec_dict:
-                         if not(image1==image2):
-                             index = fr_names['f_'+image1+'/f_'+image2]
-                             fluxratios_array[i][index] = feature_fluxes[image1]/feature_fluxes[image2]
+                 #add sampled linear values to dict of sampled non-linear values (for 1 image)
+                 kwargs_values_samples = self.multi_spec.spec_dict[image_name].lin_param_handler.add_linear_values_to_kwargs(lin_params_sample, 
+                                                                                                     kwargs_nonlinear_mult_sample[image_name])
+                 #add to dictionary with values for all images
+                 kwargs_values_mult_sample[image_name] = kwargs_values_samples
+
+             #calculate the flux ratios for that sample
+             flux_ratios_sample = self.multi_spec.get_flux_ratios_of_feature(kwargs_values_mult_sample, feature, 
+                                                                             ref_image=ref_image, continuum_range=continuum_range)
+
+             for fr_name in flux_ratios_sample:
+                 index = fr_indices[fr_name]
+                 fluxratios_array[i][index] = flux_ratios_sample[fr_name]
          
-         return fluxratios_array, list(fr_names.keys())   
+         return fluxratios_array, list(fr_indices.keys())   
 
 class FittingSequence():
 
