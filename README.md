@@ -1,8 +1,13 @@
-# lensqso-specfit
+
+<img align="right" height="240" src="https://github.com/user-attachments/assets/0edc286e-a0b2-47e9-b233-64b23a633980"> 
+
+<h3><strong>$\Huge \texttt{lensqso-specfit}$</strong></h3>  
 
 A Python package for jointly fitting the spectra of multiple gravitationally lensed quasar images, with flexibility for microlensing-induced spectral deformations.
 
-See [filename](example_usage/Example_notebook.ipynb) for a demonstration on a simple example.
+See [example_usage/Example_notebook.ipynb](example_usage/Example_notebook.ipynb) for a demonstration on a simple example.
+
+
 
 ## Features
 
