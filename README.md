@@ -1,5 +1,5 @@
 
-<img align="right" height="240" src="https://github.com/user-attachments/assets/0edc286e-a0b2-47e9-b233-64b23a633980"> 
+<img align="right" height="200" src="https://github.com/user-attachments/assets/0edc286e-a0b2-47e9-b233-64b23a633980"> 
 
 <h3><strong>$\Huge \texttt{lensqso-specfit}$</strong></h3>  
 
